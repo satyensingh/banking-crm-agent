@@ -4,13 +4,27 @@ Chainlit -> LangGraph agent (app/graph_agent.py) -> OpenAI | Anthropic | Ollama
                                                  -> FastMCP server over HTTP -> PostgreSQL
 
 Run:  chainlit run chainlit_app.py        (needs the MCP server: MCP_TRANSPORT=http python -m app.mcp_server)
+
+Guardrails here: RM login (RM_USERS + CHAINLIT_AUTH_SECRET), message-length cap, per-RM rate limit,
+and an audit record for every turn. Draft content rules live in app/guardrails.py and run inside the agent.
 """
+import asyncio
 import json
+import logging
+import os
 
 import chainlit as cl
 import pandas as pd
 
+from app.audit import write_audit
 from app.graph_agent import AgentUnavailable, GraphChatAgent
+from app.guardrails import RateLimiter, authenticate, dev_default_warnings, load_users, max_message_chars
+
+log = logging.getLogger('banking_crm.chainlit')
+if not load_users():
+    log.error('RM_USERS is empty: nobody can log in. Create a hash with: python -m app.guardrails hash-password')
+for _warning in dev_default_warnings():
+    log.warning('SECURITY: %s', _warning)
 
 STARTERS = [
     ('Find high-value prospects', 'Find the top 5 high-value customers likely to convert for a personal loan this month.'),
@@ -24,6 +38,7 @@ FOOTER = ('_Scores are heuristics, not conversion probabilities, and product mat
           'Review consent and bank policy before outreach._')
 
 _agent: GraphChatAgent | None = None
+_limiter = RateLimiter(limit=int(os.getenv('CHAT_RATE_LIMIT_PER_MIN', '10')), window=60)
 
 
 def get_agent() -> GraphChatAgent:
@@ -31,6 +46,22 @@ def get_agent() -> GraphChatAgent:
     if _agent is None:
         _agent = GraphChatAgent()  # model from LLM_PROVIDER, tools from MCP_SERVER_URL
     return _agent
+
+
+@cl.password_auth_callback
+async def auth_callback(username: str, password: str) -> cl.User | None:
+    username = (username or '').strip()
+    # PBKDF2 is deliberately slow; run it off the event loop so other RMs' chats stay responsive.
+    if await asyncio.to_thread(authenticate, username, password or ''):
+        write_audit('login', user=username, ok=True)
+        return cl.User(identifier=username, metadata={'role': 'rm', 'provider': 'credentials'})
+    write_audit('login', user=username[:100], ok=False)
+    return None
+
+
+def current_user() -> str:
+    user = cl.user_session.get('user')
+    return user.identifier if user else 'anonymous'
 
 
 @cl.set_starters
@@ -55,11 +86,38 @@ def prospects_frame(customers: list[dict]) -> pd.DataFrame:
 
 
 async def run_turn(text: str) -> None:
+    user, session_id = current_user(), cl.context.session.id
+    base = {'user': user, 'session_id': session_id}
+    if len(text) > (limit := max_message_chars()):
+        write_audit('blocked', **base, reason='message_too_long', chars=len(text))
+        await cl.Message(content=f'⚠️ Your message is too long ({len(text):,} characters). '
+                                 f'Please keep it under {limit:,}.').send()
+        return
+    if not _limiter.allow(user):
+        write_audit('blocked', **base, reason='rate_limited')
+        await cl.Message(content=f'⚠️ You are sending messages too quickly. Please wait '
+                                 f'{_limiter.retry_after(user)} seconds and try again.').send()
+        return
+
     try:
-        reply = await get_agent().reply(cl.context.session.id, text, on_tool=show_tool)
+        reply = await get_agent().reply(session_id, text, on_tool=show_tool)
     except AgentUnavailable as exc:
+        write_audit('turn_failed', **base, prompt=text, error=str(exc))
         await cl.Message(content=f'⚠️ {exc}').send()
         return
+    except Exception:
+        log.exception('Chat turn failed')
+        write_audit('turn_failed', **base, prompt=text, error='internal error')
+        await cl.Message(content='⚠️ Something went wrong. Please try again.').send()
+        return
+
+    result = reply['result'] or {}
+    write_audit('turn', **base, prompt=text, reply=reply['text'],
+                tools=[{k: t.get(k) for k in ('name', 'status', 'args', 'outcome') if k in t}
+                       for t in reply['tools']],
+                prospect_ids=[c['id'] for c in result.get('customers', [])],
+                drafts=[{'customer_id': m['customerId'], 'content': m['content']}
+                        for m in result.get('messages', [])])
 
     result, elements, actions = reply['result'], [], []
     content = reply['text']

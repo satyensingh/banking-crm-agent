@@ -4,7 +4,10 @@ import pytest
 pytest.importorskip('chainlit')
 pytest.importorskip('pandas')
 
-from chainlit_app import STARTERS, prospects_frame
+import json
+
+from app.guardrails import hash_password
+from chainlit_app import STARTERS, auth_callback, prospects_frame
 
 
 def test_prospects_frame_shapes_ui_customers_for_the_table():
@@ -20,3 +23,17 @@ def test_prospects_frame_shapes_ui_customers_for_the_table():
 
 def test_starters_are_label_message_pairs():
     assert len(STARTERS) == 4 and all(label and message for label, message in STARTERS)
+
+
+async def test_login_accepts_known_rm_rejects_others_and_audits(tmp_path, monkeypatch):
+    log_path = tmp_path / 'audit.jsonl'
+    monkeypatch.setenv('AUDIT_LOG_PATH', str(log_path))
+    monkeypatch.setenv('RM_USERS', f"asha={hash_password('a-long-password', iterations=1000)}")
+    user = await auth_callback(' asha ', 'a-long-password')
+    assert user is not None and user.identifier == 'asha' and user.metadata['role'] == 'rm'
+    assert await auth_callback('asha', 'wrong-password') is None
+    assert await auth_callback('nobody', 'a-long-password') is None
+    events = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert [(e['event'], e['user'], e['ok']) for e in events] == [
+        ('login', 'asha', True), ('login', 'asha', False), ('login', 'nobody', False)]
+    assert all('password' not in json.dumps(e) for e in events)  # passwords are never logged

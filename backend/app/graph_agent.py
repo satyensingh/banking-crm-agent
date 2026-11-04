@@ -18,6 +18,8 @@ import logging
 import os
 from typing import Any, Awaitable, Callable
 
+from .guardrails import check_draft
+
 log = logging.getLogger('banking_crm.graph_agent')
 
 DEFAULT_MCP_URL = 'http://127.0.0.1:8001/mcp'
@@ -37,14 +39,20 @@ Use the provided tools for every fact about customers, eligibility, scores and c
 customer data. Scores are heuristics, not probabilities, and product matches are preliminary
 suitability, not credit decisions or offers - say so when relevant.
 Only customers with WhatsApp contact permission may be given a WhatsApp draft. When the RM asks for
-WhatsApp messages, write a short, warm, compliant draft per customer (no guaranteed approval, no
-rates or amounts you were not given) and record them with save_whatsapp_drafts. Drafts are for RM
-review; nothing is ever sent. Keep replies concise and do not repeat tables the UI already shows."""
+WhatsApp messages, write a short, warm, compliant draft per customer and record them with
+save_whatsapp_drafts. Every draft must: stay under 600 characters; never promise or imply approval
+(no "guaranteed", "pre-approved", "approved", "assured", "instant approval"); never state interest
+rates, loan amounts or EMI figures; contain no links, email addresses or phone numbers. Invite the
+customer to reply or speak with their RM instead. If a draft is rejected, rewrite it to fix the stated
+reason. Drafts are for RM review; nothing is ever sent. Keep replies concise and do not repeat tables
+the UI already shows."""
 
 DRAFT_TOOL = {
     'name': 'save_whatsapp_drafts',
     'description': ('Record WhatsApp draft messages for RM review. Nothing is sent. Only customers '
-                    'whose WhatsApp permission was confirmed by a tool this turn are accepted.'),
+                    'whose WhatsApp permission was confirmed by a tool this turn are accepted, and each '
+                    'draft must pass the content rules (no approval promises, rates, amounts, EMI figures, '
+                    'links or contact details; max 600 characters). Rejected drafts come back with reasons.'),
     'input_schema': {
         'type': 'object',
         'properties': {'drafts': {'type': 'array', 'minItems': 1, 'maxItems': 20, 'items': {
@@ -76,19 +84,26 @@ def _ui_customer(p: dict) -> dict:
 
 
 def _save_drafts(args: dict, state: dict) -> tuple[str, bool]:
-    """Consent guard: only accept drafts for customers whose WhatsApp permission a tool confirmed this turn."""
-    saved, rejected = [], []
+    """Two deterministic guards, both must pass:
+    consent - WhatsApp permission confirmed by a tool this turn; content - guardrails.check_draft()."""
+    saved, no_consent, bad_content = [], [], {}
     for d in args.get('drafts', []) if isinstance(args, dict) else []:
         try:
-            cid, content = int(d['customer_id']), str(d['content']).strip()[:1000]
+            cid, content = int(d['customer_id']), str(d['content']).strip()
         except (KeyError, TypeError, ValueError):
             continue
-        if cid in state['permitted'] and content:
+        if cid not in state['permitted'] or not content:
+            no_consent.append(cid)
+        elif problems := check_draft(content):
+            bad_content[str(cid)] = problems
+        else:
             state['drafts'][cid] = content
             saved.append(cid)
-        else:
-            rejected.append(cid)
-    return json.dumps({'saved': saved, 'rejected_no_confirmed_whatsapp_permission': rejected}), False
+    result = {'saved': saved, 'rejected_no_confirmed_whatsapp_permission': no_consent,
+              'rejected_content': bad_content}
+    if bad_content:
+        result['instruction'] = 'Rewrite the rejected drafts to fix every listed reason, then save them again.'
+    return json.dumps(result), False
 
 
 def _text(content: Any) -> str:
@@ -238,7 +253,11 @@ class GraphChatAgent:
                         permitted |= {p['customer_id'] for p in prospects if p['whatsapp_contact_permitted']}
                     elif not error and name == 'check_whatsapp_permission' and data.get('whatsapp_contact_permitted'):
                         permitted.add(data['customer_id'])
-                trace.append({'name': name, 'status': 'error' if error else 'complete', 'detail': detail})
+                entry = {'name': name, 'status': 'error' if error else 'complete', 'detail': detail,
+                         'args': call['args']}
+                if name == DRAFT_TOOL['name']:
+                    entry['outcome'] = json.loads(_text(out[-1].content))
+                trace.append(entry)
                 if hook := _on_tool.get():
                     try:
                         await hook(name, call['args'], _text(out[-1].content), error)

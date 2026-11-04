@@ -13,6 +13,10 @@ venv/
 .ruff_cache/
 *.egg-info/
 
+# Audit log (contains customer data)
+logs/
+backend/logs/
+
 # Chainlit runtime files
 backend/.files/
 backend/.chainlit/translations/

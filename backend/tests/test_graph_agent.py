@@ -1,4 +1,6 @@
 """GraphChatAgent: scripted fake chat model + the real MCP server (in-memory) reached via langchain-mcp-adapters."""
+import json
+
 import pytest
 
 pytest.importorskip('langgraph')
@@ -56,7 +58,7 @@ async def test_prospects_flow_returns_ui_shape_and_trace(tools):
     agent, model = make_agent(tools, call_msg(use('t1', 'rank_prospects', limit=5)), say('Here are 2 prospects.'))
     body = await agent.reply('s', 'top prospects')
     assert body['text'] == 'Here are 2 prospects.'
-    assert body['tools'] == [{'name': 'rank_prospects', 'status': 'complete',
+    assert body['tools'] == [{'name': 'rank_prospects', 'status': 'complete', 'args': {'limit': 5},
                               'detail': 'Rank eligible, (by default) contactable prospects by heuristic propensity score'}]
     assert [c['id'] for c in body['result']['customers']] == [42, 21]
     assert body['result']['customers'][0]['code'] == 'PL_PREMIUM'
@@ -80,6 +82,25 @@ async def test_drafts_only_for_permitted_customers(tools):
     body = await agent.reply('s', 'drafts')
     assert [m['customerId'] for m in body['result']['messages']] == [42]
     assert 'rejected' in str(model.calls[-1]['messages'][-1].content)
+
+
+async def test_noncompliant_draft_content_is_rejected_with_reasons_then_rewrite_accepted(tools):
+    agent, model = make_agent(
+        tools, call_msg(use('t1', 'rank_prospects')),
+        call_msg(use('t2', 'save_whatsapp_drafts', drafts=[
+            {'customer_id': 42, 'content': 'You are pre-approved for Rs. 5 lakh at 10.5%! Call 9876543210'}])),
+        call_msg(use('t3', 'save_whatsapp_drafts', drafts=[
+            {'customer_id': 42, 'content': 'Hi, a personal loan could suit your plans. Reply to know more.'}])),
+        say('Drafted.'))
+    body = await agent.reply('s', 'drafts')
+    from app.graph_agent import _text
+    rejected = json.loads(_text(model.calls[3]['messages'][-1].content))
+    reasons = ' '.join(rejected['rejected_content']['42'])
+    assert rejected['saved'] == [] and 'instruction' in rejected
+    assert {'PROMISE_OF_APPROVAL', 'RATE_OR_AMOUNT', 'CONTACT_OR_LINK'} <= {r.split(':')[0] for r in rejected['rejected_content']['42']}
+    assert [m['content'] for m in body['result']['messages']] == [
+        'Hi, a personal loan could suit your plans. Reply to know more.']
+    assert body['tools'][1]['outcome']['rejected_content'] and body['tools'][2]['outcome']['saved'] == [42]
 
 
 async def test_consent_does_not_leak_across_turns(tools):

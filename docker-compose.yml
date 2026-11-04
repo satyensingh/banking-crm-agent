@@ -52,15 +52,20 @@ services:
       OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
       OLLAMA_REASONING: ${OLLAMA_REASONING:-false}
       MCP_SERVER_URL: http://mcp:8001/mcp
+      # Guardrails: login is required; startup fails if the secret is missing
+      CHAINLIT_AUTH_SECRET: "${CHAINLIT_AUTH_SECRET:?Set CHAINLIT_AUTH_SECRET in .env - generate one with: chainlit create-secret}"
+      RM_USERS: ${RM_USERS:-}
+      CHAT_MAX_MESSAGE_CHARS: ${CHAT_MAX_MESSAGE_CHARS:-4000}
+      CHAT_RATE_LIMIT_PER_MIN: ${CHAT_RATE_LIMIT_PER_MIN:-10}
+      AUDIT_LOG_PATH: /app/logs/audit.jsonl
+    volumes:
+      - audit_logs:/app/logs
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:
       mcp:
-        condition: service_started
-
-  mcp:
         condition: service_started
 
   mcp:
@@ -81,3 +86,4 @@ services:
 
 volumes:
   postgres_data:
+  audit_logs:
