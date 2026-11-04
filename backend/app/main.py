@@ -1,4 +1,4 @@
-"""FastAPI adapter exposing deterministic CRM tools. No LLM, no agent yet."""
+"""FastAPI adapter exposing deterministic CRM tools and the LangGraph chat agent (/api/chat)."""
 from __future__ import annotations
 from functools import lru_cache
 from pydantic import BaseModel, Field
@@ -6,7 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from .models import CustomerSearch, ProspectQuery
 from .deps import get_tools
-from .llm import AgentUnavailable
+from .graph_agent import AgentUnavailable, GraphChatAgent
 from .repository import DatabaseUnavailable
 from .service import CRMTools, CustomerNotFound, ProductNotFound
 
@@ -77,8 +77,7 @@ class ChatRequest(BaseModel):
 
 @lru_cache
 def get_agent():
-    from .agent import ChatAgent
-    return ChatAgent()
+    return GraphChatAgent()
 
 
 @app.post('/api/chat')

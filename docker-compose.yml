@@ -29,16 +29,23 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-5-5}
-      CLAUDE_EFFORT: ${CLAUDE_EFFORT:-medium}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5}
-      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-8192}
+      OLLAMA_REASONING: ${OLLAMA_REASONING:-false}
+      MCP_SERVER_URL: http://mcp:8001/mcp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8080:8000"
     depends_on:
       postgres:
         condition: service_healthy
+      mcp:
+        condition: service_started
 
   mcp:
     build:

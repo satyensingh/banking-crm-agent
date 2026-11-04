@@ -11,17 +11,17 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
         │  POST /api/chat  {sessionId, message}   (Vite proxies /api → backend)
         ▼
  FastAPI backend (:8000 in container, :8080 on host)
-   ├─ /api/chat ── ChatAgent (app/agent.py) ──► LLM (Anthropic or OpenAI, tool-use loop)
-   │                    │ in-process MCP client
+   ├─ /api/chat ── LangGraph agent (app/graph_agent.py) ──► LLM (Anthropic, OpenAI or local Ollama)
+   │                    │ MCP client (langchain-mcp-adapters, streamable HTTP)
    │                    ▼
-   │               FastMCP server (app/mcp_server.py) ── 7 read-only tools
+   │               mcp service (:8001) ── FastMCP server (app/mcp_server.py) ── 7 read-only tools
    ├─ /api/tools/*  REST adapter over the same tools
    │                    ▼
    │               CRMTools (service.py) → rules.py (pure business rules)
    │                    ▼
    └──────────────► PostgresRepository (read-only transactions) ──► PostgreSQL 16 (:5432)
 
- mcp service (:8001) ── same FastMCP server over streamable HTTP, for external MCP clients
+ mcp service (:8001) ── the FastMCP server over streamable HTTP; used by the chat agent and by external MCP clients
 ```
 
 | Path | Purpose |
@@ -30,8 +30,7 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
 | [backend/app/service.py](backend/app/service.py) | `CRMTools`: orchestrates repository + rules |
 | [backend/app/repository.py](backend/app/repository.py) | Parameterised, read-only SQL against `banking_crm_demo` |
 | [backend/app/mcp_server.py](backend/app/mcp_server.py) | FastMCP server: typed inputs/outputs, validation, structured errors |
-| [backend/app/agent.py](backend/app/agent.py) | Provider-neutral tool-use loop, session memory, UI response shaping |
-| [backend/app/llm.py](backend/app/llm.py) | LLM provider adapters: Anthropic Messages API, OpenAI Responses API |
+| [backend/app/graph_agent.py](backend/app/graph_agent.py) | LangGraph agent: MCP client tools, consent guard, session memory, UI response shaping |
 | [backend/app/main.py](backend/app/main.py) | FastAPI app: `/health`, `/api/tools/*`, `/api/chat` |
 | [frontend/](frontend/) | React UI (see [frontend/README.md](frontend/README.md)) |
 | [scripts/banking_crm_seed_database.sql](scripts/banking_crm_seed_database.sql) | Schema + synthetic seed data, loaded on first DB start |
@@ -39,7 +38,7 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
 
 ## Quick start (Docker)
 
-Requires Docker with Compose v2 and an Anthropic or OpenAI API key.
+Requires Docker with Compose v2 and either an Anthropic or OpenAI API key, or a local [Ollama](https://ollama.com) for free use (`ollama pull qwen3:8b`, then set `LLM_PROVIDER=ollama`).
 
 ```bash
 cp .env.example .env          # set LLM_PROVIDER and the matching API key
@@ -61,19 +60,22 @@ All variables live in [.env.example](.env.example).
 
 | Variable | Used by | Default | Description |
 |---|---|---|---|
-| `LLM_PROVIDER` | backend | `anthropic` | `anthropic` or `openai` |
+| `LLM_PROVIDER` | backend | `anthropic` | `anthropic`, `openai` or `ollama` (free, local) |
 | `ANTHROPIC_API_KEY` | backend | – | Required when provider is `anthropic` (503 without it) |
 | `CLAUDE_MODEL` | backend | `claude-sonnet-5-5` | Model for the chat agent |
-| `CLAUDE_EFFORT` | backend | `medium` | `low` … `max` |
 | `OPENAI_API_KEY` | backend | – | Required when provider is `openai` |
 | `OPENAI_MODEL` | backend | `gpt-5` | OpenAI model for the chat agent |
-| `OPENAI_REASONING_EFFORT` | backend | `medium` | `minimal` / `low` / `medium` / `high` |
 | `OPENAI_BASE_URL` | backend | OpenAI | Point at an OpenAI-compatible gateway |
+| `OLLAMA_MODEL` | backend | `qwen3:8b` | Local model; run `ollama pull qwen3:8b` first |
+| `OLLAMA_BASE_URL` | backend | `http://localhost:11434` | Compose sets `http://host.docker.internal:11434` |
+| `OLLAMA_NUM_CTX` | backend | `8192` | Context window (Ollama's 4k default is too small for the tools) |
+| `OLLAMA_REASONING` | backend | `false` | `true` makes Qwen3 think first: better tool use, slower |
 | `POSTGRES_PASSWORD` | postgres, backend, mcp | `banking_dev_password` | Dev-only default; change outside local use |
 | `DATABASE_URL` | backend, mcp | built by compose | Set only when running outside Docker |
 | `VITE_DEMO_MODE` | frontend | `true` | `false` calls the real backend |
 | `API_PROXY_TARGET` | frontend | `http://backend:8000` | Vite dev-proxy target for `/api` |
 | `VITE_API_BASE_URL` | frontend | – | Direct API base URL (skips the proxy) |
+| `MCP_SERVER_URL` | backend | `http://127.0.0.1:8001/mcp` | Where the chat agent reaches the MCP server (compose sets `http://mcp:8001/mcp`) |
 | `MCP_TRANSPORT` / `MCP_PORT` | mcp | `stdio` / `8001` | `http` for network serving |
 
 Never put secrets in `VITE_*` variables; they are bundled into the browser.
