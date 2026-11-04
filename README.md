@@ -19,7 +19,7 @@ An AI assistant for banking **relationship managers (RMs)**. The RM asks for per
 - [Project structure](#project-structure)
 - [Data and business rules](#data-and-business-rules)
 - [Guardrails](#guardrails)
-- [Tools, MCP and REST](#tools-mcp-and-rest)
+- [Tools and the MCP server](#tools-and-the-mcp-server)
 - [Testing](#testing)
 - [Extending the app](#extending-the-app)
 - [Troubleshooting](#troubleshooting)
@@ -35,7 +35,6 @@ flowchart LR
     AG -->|"MCP client (streamable HTTP)"| MCP["FastMCP server<br/>app/mcp_server.py :8001"]
     MCP --> SVC["CRMTools + rules.py<br/>deterministic business rules"]
     SVC -->|read-only SQL| DB[("PostgreSQL :5432<br/>schema banking_crm_demo")]
-    REST["FastAPI REST adapter :8080<br/>(optional, not used by the chat)"] --> SVC
 ```
 
 **One chat turn:**
@@ -96,13 +95,11 @@ The first build takes a few minutes. PostgreSQL seeds itself with 150 synthetic 
 |---|---|
 | **http://localhost:8000** | **Chat UI (Chainlit): start here** |
 | http://localhost:8001/mcp | MCP server (streamable HTTP, bound to localhost) |
-| http://localhost:8080/docs | REST adapter API docs (optional) |
-| http://localhost:8080/health | REST adapter + database health |
 
 **Verify it works:** open http://localhost:8000, sign in as `rm` / `rm-demo-password`, and click a starter such as *Find high-value prospects*. You should see tool steps run, then a prospect table.
 
 ```bash
-docker compose ps                 # all services should be "Up"
+docker compose ps                 # postgres (healthy), mcp and chainlit should be "Up"
 docker compose logs -f chainlit   # follow the chat service logs
 docker compose down               # stop (keeps the database)
 docker compose down -v            # stop AND delete the database volume (re-seeds on next start)
@@ -183,13 +180,13 @@ All variables live in [.env.example](.env.example). Docker Compose reads `.env` 
 | `MCP_SERVER_URL` | chainlit | `http://127.0.0.1:8001/mcp` | Where the agent's MCP client finds the tool server. Compose sets `http://mcp:8001/mcp` |
 | `MCP_TRANSPORT` | mcp | `stdio` | `http` to serve over the network (Compose sets it) |
 | `MCP_PORT` | mcp | `8001` | MCP server port |
-| `DATABASE_URL` | mcp, backend | built by Compose | Set only when running outside Docker |
+| `DATABASE_URL` | mcp | built by Compose | Set only when running outside Docker |
 | `CHAINLIT_AUTH_SECRET` | chainlit | dev default in `.env.example` (**required**) | Signs login sessions. Compose won't start without it. Replace the dev default before sharing the app |
 | `RM_USERS` | chainlit | `rm` / `rm-demo-password` in `.env.example` | RM logins as `user=<hash>,user2=<hash>`. Empty = nobody can sign in. Replace the demo login before sharing the app |
 | `CHAT_MAX_MESSAGE_CHARS` | chainlit | `4000` | Longest chat message accepted |
 | `CHAT_RATE_LIMIT_PER_MIN` | chainlit | `10` | Messages per RM per minute |
 | `AUDIT_LOG_PATH` | chainlit | `logs/audit.jsonl` | Audit log file. Compose writes to the `audit_logs` volume at `/app/logs/audit.jsonl` |
-| `POSTGRES_PASSWORD` | postgres, mcp, backend | `banking_dev_password` | **Dev-only default. Change it outside local use** |
+| `POSTGRES_PASSWORD` | postgres, mcp | `banking_dev_password` | **Dev-only default. Change it outside local use** |
 
 ## Local development (without Docker)
 
@@ -222,24 +219,18 @@ MCP_TRANSPORT=http python -m app.mcp_server        # serves http://localhost:800
 
 ```bash
 cd backend && source .venv/bin/activate
-export LLM_PROVIDER=openai OPENAI_API_KEY=sk-...   # or anthropic / ollama (see above)
-set -a; source ../.env; set +a                     # dev secret + demo login (rm / rm-demo-password)
-# MCP_SERVER_URL defaults to http://127.0.0.1:8001/mcp; the audit log goes to backend/logs/audit.jsonl
-chainlit run chainlit_app.py -w                     # http://localhost:8000, reloads on change
+set -a; source ../.env; set +a      # provider + key, dev secret and demo login (rm / rm-demo-password)
+export OLLAMA_BASE_URL=http://localhost:11434   # only with Ollama: .env points at Docker's host.docker.internal
+chainlit run chainlit_app.py -w     # http://localhost:8000, reloads on change
 ```
 
-**5. Optional REST adapter** (terminal 3)
-
-```bash
-export DATABASE_URL='postgresql://banking_user:banking_dev_password@localhost:5432/banking_crm'
-uvicorn app.main:app --reload --port 8080
-```
+`MCP_SERVER_URL` defaults to `http://127.0.0.1:8001/mcp`, which is the server from step 3. The audit log goes to `backend/logs/audit.jsonl`.
 
 ## Project structure
 
 ```text
 .
-├── docker-compose.yml            # postgres, mcp, chainlit, backend (REST)
+├── docker-compose.yml            # postgres, mcp, chainlit
 ├── .env.example                  # every setting, documented
 ├── .mcp.json                     # MCP servers for Claude Code (http + stdio)
 ├── scripts/
@@ -249,7 +240,7 @@ uvicorn app.main:app --reload --port 8080
     ├── chainlit_app.py           # Chainlit UI: starters, live tool steps, table + CSV, drafts
     ├── chainlit.md               # welcome screen text
     ├── .chainlit/config.toml     # Chainlit settings (app name, tool-step display)
-    ├── Dockerfile                # image shared by mcp, chainlit and backend
+    ├── Dockerfile                # one image for both the mcp and chainlit services
     ├── requirements.txt          # runtime deps    ·  requirements-dev.txt adds test deps
     ├── app/
     │   ├── graph_agent.py        # LangGraph agent, LLM providers, MCP client, consent guard
@@ -260,8 +251,7 @@ uvicorn app.main:app --reload --port 8080
     │   ├── rules.py              # pure business rules (classification, scoring, products, consent)
     │   ├── repository.py         # parameterised, read-only SQL
     │   ├── models.py             # Pydantic request/response models
-    │   ├── deps.py               # wiring for the repository and tools
-    │   └── main.py               # optional FastAPI REST adapter
+    │   └── deps.py               # wiring for the repository and tools
     └── tests/                    # pytest suites (no DB, network or API key needed)
 ```
 
@@ -336,19 +326,19 @@ The audit log contains customer names and draft text, so it is created owner-rea
 
 **Not covered:** these rules catch known wording patterns, not every non-compliant phrasing. An RM still reviews every draft. There's no check that numbers in the final answer match tool outputs, no prompt-injection classifier, and no auth on the MCP endpoint (it's bound to `127.0.0.1` on the host, but other containers on the Docker network can reach it).
 
-## Tools, MCP and REST
+## Tools and the MCP server
 
-The same seven capabilities are exposed as **MCP tools** (used by the agent) and, except the profile lookup, as **REST endpoints**.
+The seven CRM capabilities are **MCP tools** served by the FastMCP server. The agent reaches them over HTTP, and any other MCP client can use them too.
 
-| MCP tool | REST | What it does |
-|---|---|---|
-| `search_customers` | `POST /api/tools/customers/search` | Filter by city, income, credit score, balance, occupation (paginated) |
-| `get_customer_profile` | – | Minimised profile (no contact or consent fields) |
-| `classify_high_value` | `GET /api/tools/customers/{id}/classification` | High-value segmentation |
-| `score_conversion` | `GET /api/tools/customers/{id}/score` | Explainable 0–100 score with blockers |
-| `match_products` | `GET /api/tools/customers/{id}/products` | Preliminary suitability, optional `product_code` |
-| `check_whatsapp_permission` | `GET /api/tools/customers/{id}/whatsapp-permission` | Eligibility, opt-in, do-not-contact, 30-day cooldown |
-| `rank_prospects` | `POST /api/tools/prospects/rank` | Eligible, (by default) contactable prospects, ranked |
+| MCP tool | What it does |
+|---|---|
+| `search_customers` | Filter by city, income, credit score, balance, occupation (paginated) |
+| `get_customer_profile` | Minimised profile (no contact or consent fields) |
+| `classify_high_value` | High-value segmentation |
+| `score_conversion` | Explainable 0–100 score with blockers |
+| `match_products` | Preliminary suitability, optional `product_code` |
+| `check_whatsapp_permission` | Eligibility, opt-in, do-not-contact, 30-day cooldown |
+| `rank_prospects` | Eligible, (by default) contactable prospects, ranked |
 
 All tools are read-only (`readOnlyHint`), and queries run in `READ ONLY` transactions. Search and profile tools return a fixed allow-list of fields, so there is no phone, email or consent data.
 
@@ -375,7 +365,7 @@ pytest -q
 | Suite | Covers |
 |---|---|
 | `tests/test_rules.py` | Business rules and eligibility blockers |
-| `tests/test_api.py` | REST adapter: status codes, validation |
+| `tests/fakes.py` | Shared in-memory repository used by the other suites (not a test file) |
 | `tests/test_mcp_server.py` | MCP protocol through an in-memory client: schemas, validation, structured errors, masking |
 | `tests/test_graph_agent.py` | LangGraph agent with a scripted fake model and the real MCP server: tool flow, consent guard, memory, round limit, providers, error mapping |
 | `tests/test_guardrails.py` | Draft content rules, password hashing and login, rate limiter, audit log |
@@ -417,8 +407,9 @@ If the tool's result should appear in the UI table or feed the consent check, al
 | *"rate limited"* | Your provider's rate limit. Retry shortly. |
 | Changed `.env` but nothing changed | Compose reads `.env` when containers are created: `docker compose up -d chainlit`. |
 | Wanted fresh seed data | `docker compose down -v`, then `docker compose up -d`. This deletes the database volume. |
-| Port already in use (8000, 8001, 8080, 5432) | Stop the other process, or change the host port in `docker-compose.yml`. |
+| Port already in use (8000, 8001, 5432) | Stop the other process, or change the host port in `docker-compose.yml`. |
 | `Found orphan containers` warning | A service was renamed or removed. Clean up with `docker compose up -d --remove-orphans`. |
+| Chainlit log: *Ignoring pre-2.12.0 MCP config sections in /app/.chainlit/config.toml* | Harmless. Chainlit's own MCP feature is off (the app's tools come from the `mcp` service). Newer Chainlit versions flag the old `[features.mcp.*]` sections in `config.toml`, and deleting those sections silences it. |
 | Chainlit fails with *"Timeout should be used inside a task"* | You're on Python 3.14. Use Python 3.12 (the Docker image already does). |
 | `ModuleNotFoundError` when running tests or Chainlit locally | Activate the venv and run from `backend/`: `cd backend && source .venv/bin/activate`. |
 | Claude Code reports `banking-crm-tools-stdio` failed: *"Executable not found: python"* | That `.mcp.json` entry runs `python`, which many systems only provide as `python3`. Edit its `command`, or use the `banking-crm-tools` HTTP entry. |
@@ -428,8 +419,8 @@ If the tool's result should appear in the UI table or feed the consent check, al
 
 - **Deterministic core:** every number the agent reports comes from `rules.py`. The LLM only selects tools and writes prose.
 - **Human in the loop:** WhatsApp drafts are recorded for review and never sent. There is no sending integration. See [Guardrails](#guardrails).
-- **Authentication covers the chat only.** The REST adapter (`:8080`) and the MCP HTTP endpoint have no authentication. The MCP and database ports are bound to `127.0.0.1`, but REST is not: keep it off any shared network, or remove the `backend` service if you don't use it. Use HTTPS (a reverse proxy) in front of the chat before exposing it beyond your machine, because the login form is plain HTTP.
-- **Rate-limit and login state are in-process.** They reset on restart and are not shared across multiple Chainlit workers.
+- **Authentication covers the chat only.** The MCP HTTP endpoint has no authentication. The MCP and database ports are bound to `127.0.0.1` on the host, so only the chat (`:8000`) is reachable from other machines. Use HTTPS (a reverse proxy) in front of the chat before exposing it beyond your machine, because the login form is plain HTTP.
+- **The rate limit is in-process.** It resets on restart and isn't shared across multiple Chainlit workers. Login sessions are signed tokens, so they survive a restart as long as `CHAINLIT_AUTH_SECRET` stays the same.
 - **Chat memory is in-process:** it uses LangGraph's in-memory checkpointer keyed by the Chainlit session. It resets on restart, has no size cap, and doesn't work across multiple workers. Switch to LangGraph's Postgres checkpointer for durability.
 - **Chainlit's own history sidebar** is not enabled (it needs a data layer). It is separate from the CRM database.
 - **Ranking scalability:** `rank_prospects` scans all matching rows in Python (capped at 10,000). Move scoring into SQL before using large datasets.

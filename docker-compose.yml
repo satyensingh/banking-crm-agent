@@ -19,20 +19,6 @@ services:
       retries: 20
       start_period: 20s
 
-  # REST adapter over the same CRM tools (optional; the chat UI does not use it)
-  backend:
-    build:
-      context: ./backend
-    container_name: banking-crm-backend
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://banking_user:${POSTGRES_PASSWORD:-banking_dev_password}@postgres:5432/banking_crm
-    ports:
-      - "8080:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-
   # Chat UI: Chainlit -> LangGraph agent -> LLM, tools via the mcp service (FastMCP) -> PostgreSQL
   chainlit:
     build:

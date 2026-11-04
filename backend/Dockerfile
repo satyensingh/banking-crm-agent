@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY chainlit_app.py chainlit.md ./
 COPY .chainlit ./.chainlit
-EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# One image, two services (see docker-compose.yml): the MCP tool server and the Chainlit chat UI.
+EXPOSE 8000 8001
+CMD ["python", "-m", "app.mcp_server"]

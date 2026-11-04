@@ -15,7 +15,7 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 from app.graph_agent import LIMIT_TEXT, REFUSAL_TEXT, GraphChatAgent
 from app.mcp_server import build_server
 from app.service import CRMTools
-from test_api import FakeRepo
+from fakes import FakeRepo
 from test_rules import NOW
 
 

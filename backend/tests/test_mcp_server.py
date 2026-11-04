@@ -6,7 +6,7 @@ from fastmcp.exceptions import ToolError
 from app.mcp_server import build_server, parse_tool_error
 from app.repository import DatabaseUnavailable
 from app.service import CRMTools
-from test_api import FakeRepo
+from fakes import FakeRepo
 from test_rules import NOW
 
 EXPECTED_TOOLS = {'search_customers', 'get_customer_profile', 'classify_high_value',
