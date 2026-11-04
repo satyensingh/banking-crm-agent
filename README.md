@@ -1,90 +1,155 @@
-# Banking CRM — Python Deterministic Business Tools
+# Banking CRM Agent
 
-FastAPI + psycopg 3 service implementing **real, read-only business tools** for the Agentic AI banking take-home. No LLM or hardcoded customer response is involved. Tools query the **existing** `banking_crm_demo` schema from `banking_crm_seed.sql`, return structured results, and can later be wrapped as agent tools (LangGraph, OpenAI tool calls, etc.).
+An agentic assistant for banking relationship managers (RMs). An RM asks for personal-loan prospects in plain language; Claude calls deterministic, read-only CRM tools, and the UI shows ranked prospects, tool traces and WhatsApp **drafts** for review. Nothing is ever sent to customers.
 
-## What you get
+> Scores are heuristics, **not** conversion probabilities. Product matches are preliminary suitability, **not** credit decisions or offers. All customer data is synthetic.
 
-| Tool | Endpoint | Implementation |
-|---|---|---|
-| Search customers | `POST /api/tools/customers/search` | Parameterized SQL against `customer_features` |
-| High-value classification | `GET /api/tools/customers/{id}/classification` | Income >= ₹80k AND balance >= ₹100k (illustrative rule) |
-| Conversion scoring | `GET /api/tools/customers/{id}/score` | Explainable 0–100 score, matching SQL view scoring thresholds |
-| Product matching | `GET /api/tools/customers/{id}/products` | Product minimums + personal-loan eligibility blockers |
-| Outreach consent check | `GET /api/tools/customers/{id}/whatsapp-permission` | Opt-in, DNC, product-contact cooldown, loan eligibility |
-| Ranked prospects | `POST /api/tools/prospects/rank` | Joins above deterministic logic, filters then ranks |
+## Architecture
 
-**Score != conversion probability.** No ML training or calibration is claimed. All product matches are preliminary; not approvals, rates offered, or underwriting decisions.
+```text
+ React + Vite UI (:5173)
+        │  POST /api/chat  {sessionId, message}   (Vite proxies /api → backend)
+        ▼
+ FastAPI backend (:8000 in container, :8080 on host)
+   ├─ /api/chat ── ChatAgent (app/agent.py) ──► Claude (Anthropic API, tool-use loop)
+   │                    │ in-process MCP client
+   │                    ▼
+   │               FastMCP server (app/mcp_server.py) ── 7 read-only tools
+   ├─ /api/tools/*  REST adapter over the same tools
+   │                    ▼
+   │               CRMTools (service.py) → rules.py (pure business rules)
+   │                    ▼
+   └──────────────► PostgresRepository (read-only transactions) ──► PostgreSQL 16 (:5432)
 
-## Start
+ mcp service (:8001) ── same FastMCP server over streamable HTTP, for external MCP clients
+```
 
-1. In this folder (which includes `docker-compose.yml` and `banking_crm_seed.sql`), run `docker compose up -d` (initial volume creation seeds the data). Verify the database is reachable.
-2. Inside this folder:
+| Path | Purpose |
+|---|---|
+| [backend/app/rules.py](backend/app/rules.py) | Pure, unit-tested business rules (classification, scoring, product match, consent) |
+| [backend/app/service.py](backend/app/service.py) | `CRMTools`: orchestrates repository + rules |
+| [backend/app/repository.py](backend/app/repository.py) | Parameterised, read-only SQL against `banking_crm_demo` |
+| [backend/app/mcp_server.py](backend/app/mcp_server.py) | FastMCP server: typed inputs/outputs, validation, structured errors |
+| [backend/app/agent.py](backend/app/agent.py) | Claude tool-use loop, session memory, UI response shaping |
+| [backend/app/main.py](backend/app/main.py) | FastAPI app: `/health`, `/api/tools/*`, `/api/chat` |
+| [frontend/](frontend/) | React UI (see [frontend/README.md](frontend/README.md)) |
+| [scripts/banking_crm_seed_database.sql](scripts/banking_crm_seed_database.sql) | Schema + synthetic seed data, loaded on first DB start |
+| [diagrams/database_diagram.md](diagrams/database_diagram.md) | ER diagram |
+
+## Quick start (Docker)
+
+Requires Docker with Compose v2 and an Anthropic API key.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cp .env.example .env          # then set ANTHROPIC_API_KEY
+docker compose up -d --build
+```
+
+| URL | What |
+|---|---|
+| http://localhost:5173 | UI |
+| http://localhost:8080/docs | Backend OpenAPI docs |
+| http://localhost:8080/health | Backend + DB health |
+| http://localhost:8001/mcp | MCP server (streamable HTTP, bound to localhost) |
+
+The UI uses **demo fixtures** unless `VITE_DEMO_MODE=false` (set in `.env.example`). The seed script only runs when the Postgres volume is empty; to re-seed run `docker compose down -v` (this deletes the database volume).
+
+## Configuration
+
+All variables live in [.env.example](.env.example).
+
+| Variable | Used by | Default | Description |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | backend | – | Required for `/api/chat` (503 without it) |
+| `CLAUDE_MODEL` | backend | `claude-sonnet-5-5` | Model for the chat agent |
+| `CLAUDE_EFFORT` | backend | `medium` | `low` … `max` |
+| `POSTGRES_PASSWORD` | postgres, backend, mcp | `banking_dev_password` | Dev-only default; change outside local use |
+| `DATABASE_URL` | backend, mcp | built by compose | Set only when running outside Docker |
+| `VITE_DEMO_MODE` | frontend | `true` | `false` calls the real backend |
+| `API_PROXY_TARGET` | frontend | `http://backend:8000` | Vite dev-proxy target for `/api` |
+| `VITE_API_BASE_URL` | frontend | – | Direct API base URL (skips the proxy) |
+| `MCP_TRANSPORT` / `MCP_PORT` | mcp | `stdio` / `8001` | `http` for network serving |
+
+Never put secrets in `VITE_*` variables; they are bundled into the browser.
+
+## Local development (without Docker for the backend)
+
+```bash
+docker compose up -d postgres                 # database only
+
+cd backend
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 export DATABASE_URL='postgresql://banking_user:banking_dev_password@localhost:5432/banking_crm'
-uvicorn app.main:app --reload --port 8000
+export ANTHROPIC_API_KEY=...                  # for /api/chat
+uvicorn app.main:app --reload --port 8080
+
+# second terminal
+cd frontend && npm install
+API_PROXY_TARGET=http://localhost:8080 VITE_DEMO_MODE=false npm run dev
 ```
 
-3. Open http://localhost:8000/docs to run each tool interactively.
+## Tools
 
-### Examples
+The same seven capabilities are exposed as MCP tools (used by the agent) and, except the profile lookup, as REST endpoints.
+
+| MCP tool | REST | Rule |
+|---|---|---|
+| `search_customers` | `POST /api/tools/customers/search` | Filter by city, income, credit score, balance, occupation (paginated) |
+| `get_customer_profile` | – | Minimised profile (no contact or consent fields) |
+| `classify_high_value` | `GET /api/tools/customers/{id}/classification` | Income ≥ ₹80k and balance ≥ ₹100k (illustrative policy) |
+| `score_conversion` | `GET /api/tools/customers/{id}/score` | Explainable 0–100 heuristic with blockers |
+| `match_products` | `GET /api/tools/customers/{id}/products` | Preliminary suitability, optional `product_code` |
+| `check_whatsapp_permission` | `GET /api/tools/customers/{id}/whatsapp-permission` | Opt-in, do-not-contact, contact cooldown |
+| `rank_prospects` | `POST /api/tools/prospects/rank` | Eligible, (by default) contactable prospects, ranked by score |
+
+All tools are read-only (`readOnlyHint`) and queries run in `READ ONLY` transactions.
+
+**Errors** from MCP tools are JSON in the error message: `{"code": "NOT_FOUND" | "DATABASE_UNAVAILABLE" | "INVALID_INPUT" | "INTERNAL_ERROR", "message": "...", "retryable": bool}`. Unexpected exceptions are masked; details go to server logs only.
+
+### Using the MCP server directly
 
 ```bash
-curl -s http://localhost:8000/api/tools/customers/1/score | python -m json.tool
-curl -s http://localhost:8000/api/tools/customers/1/classification | python -m json.tool
-curl -s http://localhost:8000/api/tools/customers/1/products | python -m json.tool
-curl -s http://localhost:8000/api/tools/customers/1/whatsapp-permission | python -m json.tool
-curl -s -X POST http://localhost:8000/api/tools/customers/search \
-  -H 'Content-Type: application/json' \
-  -d '{"city":"Mumbai","min_income_inr":80000,"limit":10}' | python -m json.tool
-curl -s -X POST http://localhost:8000/api/tools/prospects/rank \
-  -H 'Content-Type: application/json' \
-  -d '{"high_value_only":true,"contactable_only":true,"limit":5}' | python -m json.tool
-curl -s -X POST http://localhost:8000/api/tools/prospects/rank \
-  -H 'Content-Type: application/json' \
-  -d '{"product_code":"PL_PREMIUM","limit":10}' | python -m json.tool
+cd backend
+python -m app.mcp_server                       # stdio (e.g. for Claude Desktop / Claude Code)
+MCP_TRANSPORT=http python -m app.mcp_server    # http://localhost:8001/mcp
 ```
 
-## Tests
+Claude Code example: `claude mcp add --transport http banking-crm http://localhost:8001/mcp`.
+
+### `/api/chat`
 
 ```bash
+curl -s localhost:8080/api/chat -H 'content-type: application/json' \
+  -d '{"sessionId":"demo-1","message":"Top 3 personal loan prospects with WhatsApp drafts"}'
+```
+
+Returns `{text, tools: [{name, detail, status}], result: {type, customers, messages, total, mode}}`. Notes:
+
+- Session history (last 20 messages, 200 sessions) is **in memory**: it resets on restart and does not work across multiple backend workers.
+- `save_whatsapp_drafts` is an agent-local tool that records drafts for review. It rejects customers whose WhatsApp permission was not confirmed by a tool in the same turn.
+- Errors: 503 (no/invalid API key), 429 (rate limited), 502 (Anthropic API failure).
+
+## Testing
+
+```bash
+cd backend && source .venv/bin/activate
 pytest -q
 ```
 
-Tests are isolated using an in-memory fake repository (so a live DB isn't needed for unit/API contract tests). A live PostgreSQL integration smoke-test is recommended before submission.
+| Suite | Covers |
+|---|---|
+| `tests/test_rules.py` | Business rules, eligibility blockers |
+| `tests/test_api.py` | REST adapter, status codes, validation |
+| `tests/test_mcp_server.py` | MCP protocol via in-memory FastMCP client: schemas, validation, structured errors, masking |
+| `tests/test_chat.py` | `/api/chat` with a scripted fake Claude and the real MCP server |
 
-## Structure
+Tests use a fake repository and fake Claude client: no database, network or API key needed. The live Postgres and Anthropic paths are not covered by automated tests.
 
-```text
-app/
-  main.py        # HTTP tool endpoints, dependency injection, HTTP error handling
-  repository.py  # parameterized read-only PostgreSQL queries
-  rules.py       # pure domain rules + scoring + contact restrictions
-  service.py     # orchestrates the pure tools; read-only
-  models.py      # request/response contracts (Pydantic)
-tests/
-  test_rules.py  # rule and edge-case testing
-  test_api.py    # HTTP and validation testing
-```
+## Design notes and limitations
 
-## Design choices and trade-offs
-
-- **Deterministic business decisions:** LLM should decide *which* tool to call, not calculate eligibility, scores, or bypass consent.
-- **Explainability:** scores expose weighted components (income 25, credit 25, balance 20, EMI 15, prior interest 10, recency 5); exclusion reasons are machine-readable blocker codes.
-- **Read-only database:** the connection opens a read-only transaction and uses bound SQL parameters. No arbitrary SQL execution or customer-data changes.
-- **Privacy:** customer search hides phone numbers; the full internal customer feature record is used only within service functions. Do not expose these endpoints without auth/permissions for a real bank.
-- **Personal loan focused:** campaign ranking defaults to personal-loan offers; non-personal-loan matching is preliminary and does not model full underwriting.
-- **Scale limitation:** ranking scans at most 10,000 matching customers in batches and then sorts in memory. For production replace with an indexed materialized feature table plus database-side scoring and keyset pagination.
-- **Data model limitation:** the demo seed creates one account per customer. `customer_features` assumes a single account per customer; adjust the view to aggregate accounts before real multi-account usage.
-- **No conversational agent yet:** This is precisely the deterministic tool layer. Next step: a Python agentic orchestrator + conversational API endpoint compatible with the React `POST /api/chat` contract.
-
-## Local UI integration
-
-The React frontend's `POST /api/chat` requires conversational orchestration and is **not implemented here**. To connect this service without a proxy, call port 8000 directly through curl/OpenAPI. Later, the orchestrator should expose `/api/chat` and have the agent invoke `CRMTools` functions, not raw SQL. If using the provided Vite UI, update its proxy from port 8080 to 8000 when that chat endpoint exists.
-
-## Security / limitations
-
-Demo data is synthetic. Contact permission is for **outreach drafting** only; no sending endpoint is provided. Eligibility/contact status is time-dependent and should be checked again immediately before any actual outreach. In production add role/record-level access control, audit logging, policy versioning, bank-approved marketing preferences, data minimization, and real underwriting rules.
+- **Deterministic core:** every number the agent reports comes from `rules.py`; the LLM only selects tools and writes prose.
+- **PII:** search and profile tools return a fixed allow-list of fields (no phone, email or consent flags).
+- **Ranking scalability:** `rank_prospects` scans all matching rows in Python (capped at 10,000). Move scoring into SQL before using large datasets.
+- **No auth** on the backend or MCP HTTP endpoint: local development only. Add authentication before exposing either.
+- **Dev defaults:** the Postgres password default and the frontend dev server are for local use only.
