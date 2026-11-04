@@ -12,13 +12,15 @@ from chainlit_app import STARTERS, auth_callback, prospects_frame
 
 def test_prospects_frame_shapes_ui_customers_for_the_table():
     df = prospects_frame([
-        {'id': 42, 'name': 'Asha Rao', 'city': 'Pune', 'score': 91, 'income': 130000.0, 'creditScore': 815,
-         'balance': 240000.0, 'product': 'Pl Premium', 'reason': 'Strong profile', 'consent': True},
-        {'id': 7, 'name': 'Ravi K', 'city': 'Delhi', 'score': 55, 'income': 50000.0, 'creditScore': 700,
-         'balance': 1000.0, 'product': 'Pl Basic', 'reason': 'Ok', 'consent': False}])
+        {'id': 42, 'name': 'Asha Rao', 'city': 'Pune', 'score': 91, 'income': 'INR 1.2L-2L', 'credit': '800+',
+         'balance': 'INR 2L-5L', 'product': 'Pl Premium', 'reason': 'Strong profile', 'consent': True},
+        {'id': 7, 'name': 'Ravi K', 'city': 'Delhi', 'score': 55, 'income': 'INR 50K-80K', 'credit': '700-749',
+         'balance': '< INR 50K', 'product': 'Pl Basic', 'reason': 'Ok', 'consent': False}])
     assert list(df['Customer']) == ['Asha Rao', 'Ravi K'] and list(df['Score']) == [91, 55]
     assert list(df['WhatsApp permitted']) == ['Yes', 'No']
-    assert 'Monthly income (INR)' in df.columns and df.to_csv(index=False).startswith('Customer,ID,City')
+    assert list(df['Monthly income band']) == ['INR 1.2L-2L', 'INR 50K-80K']
+    assert list(df['Balance band']) == ['INR 2L-5L', '< INR 50K']
+    assert df.to_csv(index=False).startswith('Customer,ID,City')
 
 
 def test_starters_are_label_message_pairs():

@@ -156,7 +156,7 @@ Click a starter on the welcome screen, or type your own request:
 ### What you see
 
 - **Tool steps:** each tool call shows as a collapsible step with its input and output, so you can see exactly where an answer came from.
-- **Prospect table:** score, income, credit score, balance, suggested product, the reason, and whether WhatsApp is permitted. A **CSV file** of the table is attached.
+- **Prospect table:** score, income band, credit score band, balance band, suggested product, the reason, and whether WhatsApp is permitted. A **CSV file** of the table is attached.
 - **Draft button:** *Draft WhatsApp messages for these prospects* asks the agent to write drafts for the prospects shown.
 - **WhatsApp drafts:** shown in copyable blocks, labelled **not sent**. Only customers with confirmed WhatsApp permission get a draft.
 - **Errors** appear as a message in the chat, for example a missing API key, a rate limit, or an unreachable model or tool server.

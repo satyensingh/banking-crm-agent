@@ -140,3 +140,54 @@ async def test_unexpected_errors_are_masked():
         err = str(await call_error(c, 'score_conversion', {'customer_id': 42}))
     assert parse_tool_error(err).code == 'INTERNAL_ERROR'
     assert 'secret' not in err and 'pw@' not in err
+
+
+# FakeRepo's exact figures (customers 42/7: 130000 income, 240000 balance, EMI 10%; 21: 90000, 150000;
+# credit 815 / 770; 7's credit 650 is a band edge, so it is not checked) in every formatting the model or UI
+# might render. None may leave the tool layer: RMs see bands only.
+EXACT_FIGURES = ('130000', '130,000', '1,30,000', '240000', '240,000', '2,40,000',
+                 '90000', '90,000', '150000', '150,000', '1,50,000', '815', '770', '10.0%', '0.10', '0.1')
+RAW_FIELDS = ('monthly_income_inr', 'current_balance_inr', 'credit_score', 'existing_emi_to_income_ratio')
+
+
+@pytest.mark.parametrize('name,args', [
+    ('search_customers', {}), ('get_customer_profile', {'customer_id': 21}),
+    ('classify_high_value', {'customer_id': 42}), ('score_conversion', {'customer_id': 21}),
+    ('match_products', {'customer_id': 42}), ('check_whatsapp_permission', {'customer_id': 42}),
+    ('rank_prospects', {'contactable_only': False}),
+])
+async def test_no_tool_output_reveals_exact_income_or_balance(client, name, args):
+    result = await client.call_tool(name, args)
+    text = ' '.join(getattr(block, 'text', '') for block in result.content) + str(result.structured_content)
+    for field in RAW_FIELDS:  # quoted, so policy keys such as 'min_monthly_income_inr' do not match
+        assert f'"{field}"' not in text and f"'{field}'" not in text
+    for exact in EXACT_FIGURES:
+        assert exact not in text, f'{name} leaked {exact}'
+
+
+async def test_profile_and_prospects_carry_bands(client):
+    profile = (await client.call_tool('get_customer_profile', {'customer_id': 21})).structured_content
+    assert (profile['income_band'], profile['credit_band'], profile['balance_band']) == \
+        ('INR 80K-1.2L', '750-799', 'INR 1L-2L')
+    top = (await client.call_tool('rank_prospects', {})).structured_content['prospects'][0]
+    assert (top['income_band'], top['credit_band'], top['balance_band']) == ('INR 1.2L-2L', '800+', 'INR 2L-5L')
+
+
+@pytest.mark.parametrize('name', ['search_customers', 'rank_prospects'])
+async def test_minimum_filters_are_snapped_and_reported(name):
+    seen = []
+
+    class RecordingRepo(FakeRepo):
+        def search_customers(self, filters):
+            seen.append(filters); return super().search_customers(filters)
+
+        def list_customers_for_ranking(self, filters):
+            seen.append(filters); return super().list_customers_for_ranking(filters)
+
+    async with Client(build_server(lambda: CRMTools(RecordingRepo(), clock=lambda: NOW))) as c:
+        data = (await c.call_tool(name, {'min_income_inr': 123457, 'min_credit_score': 777,
+                                         'min_balance_inr': 99999})).structured_content
+    assert {k: float(v) for k, v in data['applied_minimums'].items()} == \
+        {'min_income_inr': 120000, 'min_credit_score': 750, 'min_balance_inr': 50000}
+    assert (seen[0]['min_income_inr'], seen[0]['min_credit_score'], seen[0]['min_balance_inr']) == \
+        (120000, 750, 50000)

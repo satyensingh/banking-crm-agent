@@ -80,8 +80,8 @@ async def show_tool(name: str, args: dict, output: str, is_error: bool) -> None:
 def prospects_frame(customers: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([{
         'Customer': c['name'], 'ID': c['id'], 'City': c['city'], 'Score': c['score'],
-        'Monthly income (INR)': c['income'], 'Credit score': c['creditScore'],
-        'Balance (INR)': c['balance'], 'Product': c['product'], 'Why': c['reason'],
+        'Monthly income band': c['income'], 'Credit score band': c['credit'],
+        'Balance band': c['balance'], 'Product': c['product'], 'Why': c['reason'],
         'WhatsApp permitted': 'Yes' if c['consent'] else 'No'} for c in customers])
 
 

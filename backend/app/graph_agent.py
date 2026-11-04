@@ -36,7 +36,10 @@ REFUSAL_TEXT = 'I cannot help with that request.'
 
 SYSTEM_PROMPT = """You are a banking relationship-manager (RM) assistant for personal-loan outreach.
 Use the provided tools for every fact about customers, eligibility, scores and consent; never invent
-customer data. Scores are heuristics, not probabilities, and product matches are preliminary
+customer data. Customer income, balance, credit score and EMI-to-income ratio are only available as
+bands (e.g. "INR 80K-1.2L", "750-799", "15-30%"); never estimate, narrow down or guess an exact figure.
+Minimum search filters are rounded down to a band edge: when applied_minimums differs from what the RM
+asked for, tell them the threshold actually used. Scores are heuristics, not probabilities, and product matches are preliminary
 suitability, not credit decisions or offers - say so when relevant.
 Only customers with WhatsApp contact permission may be given a WhatsApp draft. When the RM asks for
 WhatsApp messages, write a short, warm, compliant draft per customer and record them with
@@ -77,8 +80,8 @@ def _initials(name: str) -> str:
 def _ui_customer(p: dict) -> dict:
     code = p.get('suggested_product_code') or ''
     return {'id': p['customer_id'], 'name': p['full_name'], 'initials': _initials(p['full_name']),
-            'city': p['city'], 'score': p['propensity_score'], 'income': float(p['monthly_income_inr']),
-            'creditScore': p['credit_score'], 'balance': float(p['current_balance_inr']),
+            'city': p['city'], 'score': p['propensity_score'], 'income': p['income_band'],
+            'credit': p['credit_band'], 'balance': p['balance_band'],
             'product': code.replace('_', ' ').title(), 'code': code, 'reason': p['reason'],
             'contacted': 'n/a', 'consent': p['whatsapp_contact_permitted']}
 

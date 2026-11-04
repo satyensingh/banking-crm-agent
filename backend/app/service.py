@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 from .models import CustomerSearch, Prospect, ProspectQuery, ProspectResponse
-from .rules import classify_high_value, contact_permission, match_products, score_conversion
+from .rules import (balance_band, classify_high_value, contact_permission, credit_band, income_band,
+                    match_products, score_conversion)
 
 
 class CustomerNotFound(LookupError):
@@ -15,17 +16,23 @@ class ProductNotFound(LookupError):
 
 
 class CRMTools:
-    SUMMARY_FIELDS = ('customer_id', 'full_name', 'city', 'occupation', 'monthly_income_inr',
-                      'credit_score', 'current_balance_inr', 'account_status', 'kyc_status')
+    SUMMARY_FIELDS = ('customer_id', 'full_name', 'city', 'occupation', 'account_status', 'kyc_status')
 
     def __init__(self, repository: Any, clock=None):
         self.repo = repository
         self.clock = clock or (lambda: datetime.now(timezone.utc))
 
+    @classmethod
+    def summary(cls, row: dict) -> dict:
+        """PII minimised: only fields the RM needs to shortlist, with income, credit score and balance as bands."""
+        out = {k: row[k] for k in cls.SUMMARY_FIELDS if k in row}
+        out['income_band'] = income_band(row.get('monthly_income_inr'))
+        out['credit_band'] = credit_band(row.get('credit_score'))
+        out['balance_band'] = balance_band(row.get('current_balance_inr'))
+        return out
+
     def search_customers(self, criteria: CustomerSearch) -> list[dict]:
-        # PII minimized: only return fields needed by the RM to shortlist.
-        allowed = self.SUMMARY_FIELDS
-        return [{k: c[k] for k in allowed if k in c} for c in self.repo.search_customers(criteria.model_dump())]
+        return [self.summary(c) for c in self.repo.search_customers(criteria.model_dump())]
 
     def get_customer(self, customer_id: int) -> dict:
         customer = self.repo.get_customer(customer_id)
@@ -34,8 +41,7 @@ class CRMTools:
         return customer
 
     def customer_profile(self, customer_id: int) -> dict:
-        row = self.get_customer(customer_id)
-        return {k: row[k] for k in self.SUMMARY_FIELDS if k in row}
+        return self.summary(self.get_customer(customer_id))
 
     def classify_high_value(self, customer_id: int):
         return classify_high_value(self.get_customer(customer_id))
@@ -83,8 +89,8 @@ class CRMTools:
                 selected = suitable_pl[0]
             output.append(Prospect(
                 customer_id=row['customer_id'], full_name=row['full_name'], city=row['city'],
-                monthly_income_inr=row['monthly_income_inr'], credit_score=row.get('credit_score'),
-                current_balance_inr=row['current_balance_inr'],
+                income_band=income_band(row['monthly_income_inr']), credit_band=credit_band(row.get('credit_score')),
+                balance_band=balance_band(row['current_balance_inr']),
                 propensity_score=score.propensity_score,
                 suggested_product_code=selected.product_code,
                 reason='; '.join(score.reasons),
@@ -93,4 +99,5 @@ class CRMTools:
             ))
         output.sort(key=lambda p: (-p.propensity_score, p.customer_id))
         selected = output[criteria.offset:criteria.offset + criteria.limit]
-        return ProspectResponse(total_returned=len(selected), prospects=selected)
+        return ProspectResponse(total_returned=len(selected), prospects=selected,
+                                applied_minimums=criteria.applied_minimums())

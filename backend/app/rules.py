@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from .bands import balance_band, credit_band, emi_band, income_band  # noqa: F401 (re-exported)
 from .models import Classification, ContactPermission, ProductMatch, ScoreBreakdown, Scoring
 
 
@@ -89,8 +90,8 @@ def score_conversion(customer: dict[str, Any], now: datetime | None = None) -> S
     score = sum(breakdown.model_dump().values())
     blockers = _blockers(customer, now)
     contact = contact_permission(customer, now)
-    reasons = [f'Monthly income INR {income:,.0f}', f'Credit score {credit}',
-               f'Account balance INR {balance:,.0f}', f'Existing EMI/income {emi:.1%}']
+    reasons = [f'Monthly income {income_band(income)}', f'Credit score {credit_band(customer.get("credit_score")) or "unavailable"}',
+               f'Account balance {balance_band(balance)}', f'Existing EMI/income {emi_band(emi)}']
     if customer.get('pl_interest_history'): reasons.append('Previous personal-loan interest')
     if contact_age is None or contact_age > 30: reasons.append('No personal-loan contact in last 30 days')
     return Scoring(customer_id=customer['customer_id'], propensity_score=score,
@@ -107,12 +108,14 @@ def match_products(customer: dict[str, Any], products: list[dict[str, Any]],
         blockers = []
         code = product['product_code']
         income = money(customer.get('monthly_income_inr'))
+        minimum_income = money(product.get('minimum_income_inr'))
         credit = customer.get('credit_score') or 0
+        minimum_credit = product.get('minimum_credit_score') or 0
         if customer.get('kyc_status') != 'VERIFIED': blockers.append('KYC_NOT_VERIFIED')
         if customer.get('risk_band') == 'HIGH': blockers.append('HIGH_RISK')
         if customer.get('account_status') != 'ACTIVE': blockers.append('ACCOUNT_NOT_ACTIVE')
-        if income < money(product.get('minimum_income_inr')): blockers.append('BELOW_PRODUCT_MINIMUM_INCOME')
-        if credit < (product.get('minimum_credit_score') or 0): blockers.append('BELOW_PRODUCT_MINIMUM_CREDIT_SCORE')
+        if income < minimum_income: blockers.append('BELOW_PRODUCT_MINIMUM_INCOME')
+        if credit < minimum_credit: blockers.append('BELOW_PRODUCT_MINIMUM_CREDIT_SCORE')
         if code.startswith('PL_'):
             blockers.extend(x for x in _blockers(customer, now) if x not in (
                 'CREDIT_SCORE_BELOW_680', 'INCOME_BELOW_30000', 'KYC_NOT_VERIFIED',
@@ -122,8 +125,11 @@ def match_products(customer: dict[str, Any], products: list[dict[str, Any]],
         matches.append(ProductMatch(customer_id=customer['customer_id'], product_id=product['product_id'],
                                     product_code=code, product_name=product['product_name'],
                                     suitable=not blockers, reasons=[
-                                        f'Income INR {income:,.0f} / minimum INR {money(product.get("minimum_income_inr")):,.0f}',
-                                        f'Credit score {credit} / minimum {product.get("minimum_credit_score") or 0}',
+                                        # Product minimums are public product data; the customer's figures are not (bands.py).
+                                        f'Income {"meets" if income >= minimum_income else "below"} '
+                                        f'product minimum INR {minimum_income:,.0f}',
+                                        f'Credit score {"meets" if credit >= minimum_credit else "below"} '
+                                        f'product minimum {minimum_credit}',
                                     ], blockers=sorted(set(blockers)),
                                     maximum_loan_amount_inr=product.get('maximum_loan_amount_inr'),
                                     annual_interest_rate_pct=product.get('annual_interest_rate_pct')))

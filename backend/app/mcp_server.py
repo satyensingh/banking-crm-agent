@@ -27,9 +27,10 @@ CustomerId = Annotated[int, Field(ge=1, le=2_147_483_647, description='Numeric c
 ProductCode = Annotated[str, Field(pattern=r'^[A-Z][A-Z0-9_]{1,49}$',
                                    description='Product code, e.g. PL_PREMIUM')]
 City = Annotated[str, Field(min_length=1, max_length=100, description='City (case-insensitive match)')]
-Income = Annotated[float, Field(ge=0, description='Minimum monthly income in INR')]
-Balance = Annotated[float, Field(ge=0, description='Minimum current balance in INR')]
-CreditScore = Annotated[int, Field(ge=300, le=900, description='Minimum credit score')]
+_SNAPPED = '; rounded down to the nearest band edge (the value used is returned in applied_minimums)'
+Income = Annotated[float, Field(ge=0, description='Minimum monthly income in INR' + _SNAPPED)]
+Balance = Annotated[float, Field(ge=0, description='Minimum current balance in INR' + _SNAPPED)]
+CreditScore = Annotated[int, Field(ge=300, le=900, description='Minimum credit score' + _SNAPPED)]
 Occupation = Literal['SALARIED', 'SELF_EMPLOYED']
 Limit = Annotated[int, Field(ge=1, le=100, description='Page size')]
 Offset = Annotated[int, Field(ge=0, le=10000, description='Rows to skip')]
@@ -90,11 +91,12 @@ def build_server(tools_provider: Callable[[], CRMTools] = get_tools) -> FastMCP:
                                   min_credit_score=min_credit_score, min_balance_inr=min_balance_inr,
                                   occupation=occupation, limit=limit, offset=offset)
         rows = tools_provider().search_customers(criteria)
-        return CustomerSearchResponse(count=len(rows), customers=rows)
+        return CustomerSearchResponse(count=len(rows), customers=rows,
+                                      applied_minimums=criteria.applied_minimums())
 
     @tool
     def get_customer_profile(customer_id: CustomerId) -> CustomerSummary:
-        """Get one customer's minimised profile (no contact details or consent data)."""
+        """Get one customer's minimised profile (no contact details or consent data; figures as bands)."""
         return CustomerSummary(**tools_provider().customer_profile(customer_id))
 
     @tool
