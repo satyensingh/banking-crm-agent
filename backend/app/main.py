@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from .models import CustomerSearch, ProspectQuery
 from .deps import get_tools
+from .llm import AgentUnavailable
 from .repository import DatabaseUnavailable
 from .service import CRMTools, CustomerNotFound, ProductNotFound
 
@@ -26,6 +27,11 @@ async def handle_product_not_found(request, exc):
 @app.exception_handler(DatabaseUnavailable)
 async def handle_database_unavailable(request, exc):
     return JSONResponse(status_code=503, content={'detail': str(exc)})
+
+
+@app.exception_handler(AgentUnavailable)
+async def handle_agent_unavailable(request, exc):
+    return JSONResponse(status_code=exc.status_code, content={'detail': str(exc)})
 
 
 @app.get('/health')
@@ -77,8 +83,4 @@ def get_agent():
 
 @app.post('/api/chat')
 async def chat(request: ChatRequest, agent=Depends(get_agent)):
-    from .agent import AgentUnavailable
-    try:
-        return await agent.reply(request.sessionId, request.message)
-    except AgentUnavailable as exc:
-        return JSONResponse(status_code=exc.status_code, content={'detail': str(exc)})
+    return await agent.reply(request.sessionId, request.message)

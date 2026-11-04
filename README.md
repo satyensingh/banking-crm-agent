@@ -11,7 +11,7 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
         │  POST /api/chat  {sessionId, message}   (Vite proxies /api → backend)
         ▼
  FastAPI backend (:8000 in container, :8080 on host)
-   ├─ /api/chat ── ChatAgent (app/agent.py) ──► Claude (Anthropic API, tool-use loop)
+   ├─ /api/chat ── ChatAgent (app/agent.py) ──► LLM (Anthropic or OpenAI, tool-use loop)
    │                    │ in-process MCP client
    │                    ▼
    │               FastMCP server (app/mcp_server.py) ── 7 read-only tools
@@ -30,7 +30,8 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
 | [backend/app/service.py](backend/app/service.py) | `CRMTools`: orchestrates repository + rules |
 | [backend/app/repository.py](backend/app/repository.py) | Parameterised, read-only SQL against `banking_crm_demo` |
 | [backend/app/mcp_server.py](backend/app/mcp_server.py) | FastMCP server: typed inputs/outputs, validation, structured errors |
-| [backend/app/agent.py](backend/app/agent.py) | Claude tool-use loop, session memory, UI response shaping |
+| [backend/app/agent.py](backend/app/agent.py) | Provider-neutral tool-use loop, session memory, UI response shaping |
+| [backend/app/llm.py](backend/app/llm.py) | LLM provider adapters: Anthropic Messages API, OpenAI Responses API |
 | [backend/app/main.py](backend/app/main.py) | FastAPI app: `/health`, `/api/tools/*`, `/api/chat` |
 | [frontend/](frontend/) | React UI (see [frontend/README.md](frontend/README.md)) |
 | [scripts/banking_crm_seed_database.sql](scripts/banking_crm_seed_database.sql) | Schema + synthetic seed data, loaded on first DB start |
@@ -38,10 +39,10 @@ An agentic assistant for banking relationship managers (RMs). An RM asks for per
 
 ## Quick start (Docker)
 
-Requires Docker with Compose v2 and an Anthropic API key.
+Requires Docker with Compose v2 and an Anthropic or OpenAI API key.
 
 ```bash
-cp .env.example .env          # then set ANTHROPIC_API_KEY
+cp .env.example .env          # set LLM_PROVIDER and the matching API key
 docker compose up -d --build
 ```
 
@@ -60,9 +61,14 @@ All variables live in [.env.example](.env.example).
 
 | Variable | Used by | Default | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | backend | – | Required for `/api/chat` (503 without it) |
+| `LLM_PROVIDER` | backend | `anthropic` | `anthropic` or `openai` |
+| `ANTHROPIC_API_KEY` | backend | – | Required when provider is `anthropic` (503 without it) |
 | `CLAUDE_MODEL` | backend | `claude-sonnet-5-5` | Model for the chat agent |
 | `CLAUDE_EFFORT` | backend | `medium` | `low` … `max` |
+| `OPENAI_API_KEY` | backend | – | Required when provider is `openai` |
+| `OPENAI_MODEL` | backend | `gpt-5` | OpenAI model for the chat agent |
+| `OPENAI_REASONING_EFFORT` | backend | `medium` | `minimal` / `low` / `medium` / `high` |
+| `OPENAI_BASE_URL` | backend | OpenAI | Point at an OpenAI-compatible gateway |
 | `POSTGRES_PASSWORD` | postgres, backend, mcp | `banking_dev_password` | Dev-only default; change outside local use |
 | `DATABASE_URL` | backend, mcp | built by compose | Set only when running outside Docker |
 | `VITE_DEMO_MODE` | frontend | `true` | `false` calls the real backend |
@@ -81,7 +87,7 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 export DATABASE_URL='postgresql://banking_user:banking_dev_password@localhost:5432/banking_crm'
-export ANTHROPIC_API_KEY=...                  # for /api/chat
+export ANTHROPIC_API_KEY=...                  # or LLM_PROVIDER=openai + OPENAI_API_KEY
 uvicorn app.main:app --reload --port 8080
 
 # second terminal
@@ -127,8 +133,9 @@ curl -s localhost:8080/api/chat -H 'content-type: application/json' \
 Returns `{text, tools: [{name, detail, status}], result: {type, customers, messages, total, mode}}`. Notes:
 
 - Session history (last 20 messages, 200 sessions) is **in memory**: it resets on restart and does not work across multiple backend workers.
+- The provider is chosen once at startup via `LLM_PROVIDER`. OpenAI runs through the stateless Responses API (`store=false`), which the newest OpenAI models require for tool calling. Both providers use the same tools, prompt and response shape.
 - `save_whatsapp_drafts` is an agent-local tool that records drafts for review. It rejects customers whose WhatsApp permission was not confirmed by a tool in the same turn.
-- Errors: 503 (no/invalid API key), 429 (rate limited), 502 (Anthropic API failure).
+- Errors: 503 (no/invalid API key or unknown `LLM_PROVIDER`), 429 (rate limited), 502 (Anthropic API failure).
 
 ## Testing
 
@@ -142,9 +149,9 @@ pytest -q
 | `tests/test_rules.py` | Business rules, eligibility blockers |
 | `tests/test_api.py` | REST adapter, status codes, validation |
 | `tests/test_mcp_server.py` | MCP protocol via in-memory FastMCP client: schemas, validation, structured errors, masking |
-| `tests/test_chat.py` | `/api/chat` with a scripted fake Claude and the real MCP server |
+| `tests/test_chat.py` | `/api/chat` with scripted fake Anthropic and OpenAI clients and the real MCP server |
 
-Tests use a fake repository and fake Claude client: no database, network or API key needed. The live Postgres and Anthropic paths are not covered by automated tests.
+Tests use a fake repository and fake LLM clients: no database, network or API key needed. The live Postgres, Anthropic and OpenAI paths are not covered by automated tests.
 
 ## Design notes and limitations
 

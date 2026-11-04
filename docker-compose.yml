@@ -26,9 +26,14 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://banking_user:${POSTGRES_PASSWORD:-banking_dev_password}@postgres:5432/banking_crm
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       CLAUDE_MODEL: ${CLAUDE_MODEL:-claude-sonnet-5-5}
       CLAUDE_EFFORT: ${CLAUDE_EFFORT:-medium}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5}
+      OPENAI_REASONING_EFFORT: ${OPENAI_REASONING_EFFORT:-medium}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
     ports:
       - "8080:8000"
     depends_on:

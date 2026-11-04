@@ -1,13 +1,12 @@
-"""Chat agent: Claude drives the CRM MCP tools (in-process) and returns the UI's reply shape."""
+"""Chat agent: an LLM (Anthropic or OpenAI) drives the CRM MCP tools in-process and returns the UI shape."""
 import json
 import logging
-import os
 from collections import OrderedDict
 from typing import Any, Callable
 
-import anthropic
 from fastmcp import Client, FastMCP
 
+from .llm import AgentUnavailable, LLMProvider, ToolOutcome, ToolSpec, make_provider
 from .mcp_server import build_server
 
 log = logging.getLogger('banking_crm.agent')
@@ -40,12 +39,6 @@ DRAFT_TOOL = {
 }
 
 
-class AgentUnavailable(RuntimeError):
-    def __init__(self, message: str, status_code: int = 503):
-        super().__init__(message)
-        self.status_code = status_code
-
-
 def _initials(name: str) -> str:
     return ''.join(p[0] for p in name.split()[:2]).upper()
 
@@ -60,21 +53,11 @@ def _ui_customer(p: dict) -> dict:
 
 
 class ChatAgent:
-    def __init__(self, client: Any = None, server_factory: Callable[[], FastMCP] = build_server,
-                 model: str | None = None):
-        self._client = client
+    def __init__(self, provider: LLMProvider | None = None,
+                 server_factory: Callable[[], FastMCP] = build_server):
+        self.provider = provider or make_provider()
         self._server = server_factory()
-        self.model = model or os.getenv('CLAUDE_MODEL', 'claude-sonnet-5-5')
-        self.effort = os.getenv('CLAUDE_EFFORT', 'medium')
         self._sessions: OrderedDict[str, list[dict]] = OrderedDict()
-
-    @property
-    def client(self):
-        if self._client is None:
-            if not (os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')):
-                raise AgentUnavailable('ANTHROPIC_API_KEY is not configured for the backend')
-            self._client = anthropic.AsyncAnthropic()
-        return self._client
 
     def _history(self, session_id: str) -> list[dict]:
         history = self._sessions.setdefault(session_id, [])
@@ -84,44 +67,28 @@ class ChatAgent:
         return history
 
     async def reply(self, session_id: str, message: str) -> dict:
-        client = self.client
+        provider = self.provider
         history = self._history(session_id)
-        messages: list[Any] = [*history, {'role': 'user', 'content': message}]
+        messages = provider.start(history, message)
         trace: list[dict] = []
         state = {'prospects': None, 'permitted': set(), 'drafts': {}}
         text = ''
-        try:
-            async with Client(self._server) as mcp:
-                described = {t.name: t for t in await mcp.list_tools()}
-                tools = [{'name': t.name, 'description': t.description or '', 'input_schema': t.inputSchema}
-                         for t in described.values()] + [DRAFT_TOOL]
-                for _ in range(MAX_TOOL_ROUNDS):
-                    response = await client.messages.create(
-                        model=self.model, max_tokens=16000, system=SYSTEM_PROMPT, tools=tools,
-                        messages=messages, output_config={'effort': self.effort})
-                    if response.stop_reason == 'refusal':
-                        text = 'I cannot help with that request.'
-                        break
-                    messages.append({'role': 'assistant', 'content': response.content})
-                    calls = [b for b in response.content if b.type == 'tool_use']
-                    if response.stop_reason != 'tool_use' or not calls:
-                        text = '\n'.join(b.text for b in response.content if b.type == 'text').strip()
-                        if response.stop_reason == 'max_tokens':
-                            text += '\n\n(Response was cut off.)'
-                        break
-                    results = []
-                    for call in calls:
-                        results.append(await self._run_tool(mcp, described, call, trace, state))
-                    messages.append({'role': 'user', 'content': results})
-                else:
-                    text = 'I could not finish within the tool-call limit. Please narrow the request.'
-        except anthropic.RateLimitError as exc:
-            raise AgentUnavailable('The AI service is rate limited; retry shortly', 429) from exc
-        except anthropic.AuthenticationError as exc:
-            raise AgentUnavailable('Backend Anthropic credentials were rejected', 503) from exc
-        except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
-            log.exception('Anthropic API failure')
-            raise AgentUnavailable('The AI service is unavailable', 502) from exc
+        async with Client(self._server) as mcp:
+            described = {t.name: t for t in await mcp.list_tools()}
+            specs = [ToolSpec(t.name, t.description or '', t.inputSchema) for t in described.values()]
+            specs.append(ToolSpec(DRAFT_TOOL['name'], DRAFT_TOOL['description'], DRAFT_TOOL['input_schema']))
+            for _ in range(MAX_TOOL_ROUNDS):
+                turn = await provider.complete(messages, SYSTEM_PROMPT, specs)
+                if turn.stop == 'refusal':
+                    text = 'I cannot help with that request.'
+                    break
+                if turn.stop != 'tool_use':
+                    text = turn.text + ('\n\n(Response was cut off.)' if turn.stop == 'max_tokens' else '')
+                    break
+                outcomes = [await self._run_tool(mcp, described, call, trace, state) for call in turn.calls]
+                provider.add_results(messages, outcomes)
+            else:
+                text = 'I could not finish within the tool-call limit. Please narrow the request.'
 
         history += [{'role': 'user', 'content': message}, {'role': 'assistant', 'content': text or '(no reply)'}]
         del history[:-MAX_HISTORY]
@@ -134,14 +101,16 @@ class ChatAgent:
                                     'content': content} for cid, content in state['drafts'].items()]}
         return {'text': text, 'tools': trace, 'result': result}
 
-    async def _run_tool(self, mcp, described, call, trace, state) -> dict:
-        def done(content: str, error: bool) -> dict:
+    async def _run_tool(self, mcp, described, call, trace, state) -> ToolOutcome:
+        def done(content: str, error: bool) -> ToolOutcome:
             trace.append({'name': call.name, 'status': 'error' if error else 'complete',
                           'detail': (described[call.name].description or '').split('.')[0]
                           if call.name in described else 'Record WhatsApp drafts for RM review'})
-            block = {'type': 'tool_result', 'tool_use_id': call.id, 'content': content}
-            return {**block, 'is_error': True} if error else block
+            return ToolOutcome(call, content, error)
 
+        if isinstance(call.input, dict) and '__invalid_json__' in call.input:
+            return done(json.dumps({'code': 'INVALID_INPUT', 'retryable': False,
+                                    'message': 'Tool arguments were not valid JSON; resend them'}), True)
         if call.name == DRAFT_TOOL['name']:
             return done(*self._save_drafts(call.input, state))
         if call.name not in described:
