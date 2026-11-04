@@ -13,10 +13,9 @@ venv/
 .ruff_cache/
 *.egg-info/
 
-# Node / frontend
-node_modules/
-frontend/dist/
-npm-debug.log*
+# Chainlit runtime files
+backend/.files/
+backend/.chainlit/translations/
 
 # OS / editor
 .DS_Store

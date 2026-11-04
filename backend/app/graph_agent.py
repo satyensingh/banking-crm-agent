@@ -12,16 +12,22 @@ Conversation memory is a LangGraph checkpointer keyed by thread_id=session_id. P
 Needs: MCP server running with MCP_TRANSPORT=http (see mcp_server.py) and MCP_SERVER_URL pointing at it.
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 log = logging.getLogger('banking_crm.graph_agent')
 
 DEFAULT_MCP_URL = 'http://127.0.0.1:8001/mcp'
 DEFAULT_MODELS = {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-5', 'ollama': 'qwen3:8b'}
 MAX_TOOL_ROUNDS = 8
+
+# Optional per-request UI hook: `async (name, args, output, is_error) -> None`, awaited after every tool call.
+# A ContextVar (not graph config) so the callable never reaches the checkpointer.
+ToolHook = Callable[[str, dict, str, bool], Awaitable[None]]
+_on_tool: contextvars.ContextVar[ToolHook | None] = contextvars.ContextVar('on_tool', default=None)
 MAX_HISTORY = 20
 LIMIT_TEXT = 'I could not finish within the tool-call limit. Please narrow the request.'
 REFUSAL_TEXT = 'I cannot help with that request.'
@@ -83,6 +89,12 @@ def _save_drafts(args: dict, state: dict) -> tuple[str, bool]:
         else:
             rejected.append(cid)
     return json.dumps({'saved': saved, 'rejected_no_confirmed_whatsapp_permission': rejected}), False
+
+
+def _text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    return '\n'.join(b.get('text', '') if isinstance(b, dict) else str(b) for b in content)
 
 
 def _error_message(call: dict, payload: dict):
@@ -227,6 +239,11 @@ class GraphChatAgent:
                     elif not error and name == 'check_whatsapp_permission' and data.get('whatsapp_contact_permitted'):
                         permitted.add(data['customer_id'])
                 trace.append({'name': name, 'status': 'error' if error else 'complete', 'detail': detail})
+                if hook := _on_tool.get():
+                    try:
+                        await hook(name, call['args'], _text(out[-1].content), error)
+                    except Exception:  # a UI problem must never break the agent turn
+                        log.exception('on_tool hook failed')
             return {'messages': out, 'trace': trace, 'permitted': sorted(permitted),
                     'prospects': prospects, 'drafts': drafts}
 
@@ -251,8 +268,9 @@ class GraphChatAgent:
         graph.add_edge('limit', END)
         return graph.compile(checkpointer=self._checkpointer or InMemorySaver())
 
-    async def reply(self, session_id: str, message: str) -> dict:
+    async def reply(self, session_id: str, message: str, on_tool: ToolHook | None = None) -> dict:
         graph = await self._get_graph()
+        _on_tool.set(on_tool)
         final = await graph.ainvoke(
             {'messages': [('user', message)], 'prospects': None, 'permitted': [], 'drafts': {},
              'trace': [], 'rounds': 0, 'truncated': False},

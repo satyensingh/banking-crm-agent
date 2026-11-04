@@ -1,12 +1,9 @@
-"""FastAPI adapter exposing deterministic CRM tools and the LangGraph chat agent (/api/chat)."""
+"""FastAPI adapter exposing the deterministic CRM tools as REST. The chat UI is Chainlit (chainlit_app.py)."""
 from __future__ import annotations
-from functools import lru_cache
-from pydantic import BaseModel, Field
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from .models import CustomerSearch, ProspectQuery
 from .deps import get_tools
-from .graph_agent import AgentUnavailable, GraphChatAgent
 from .repository import DatabaseUnavailable
 from .service import CRMTools, CustomerNotFound, ProductNotFound
 
@@ -27,11 +24,6 @@ async def handle_product_not_found(request, exc):
 @app.exception_handler(DatabaseUnavailable)
 async def handle_database_unavailable(request, exc):
     return JSONResponse(status_code=503, content={'detail': str(exc)})
-
-
-@app.exception_handler(AgentUnavailable)
-async def handle_agent_unavailable(request, exc):
-    return JSONResponse(status_code=exc.status_code, content={'detail': str(exc)})
 
 
 @app.get('/health')
@@ -68,18 +60,3 @@ def whatsapp_permission(customer_id: int, tools: CRMTools = Depends(get_tools)):
 @app.post('/api/tools/prospects/rank')
 def rank(criteria: ProspectQuery, tools: CRMTools = Depends(get_tools)):
     return tools.rank_prospects(criteria)
-
-
-class ChatRequest(BaseModel):
-    sessionId: str = Field(min_length=1, max_length=100)
-    message: str = Field(min_length=1, max_length=4000)
-
-
-@lru_cache
-def get_agent():
-    return GraphChatAgent()
-
-
-@app.post('/api/chat')
-async def chat(request: ChatRequest, agent=Depends(get_agent)):
-    return await agent.reply(request.sessionId, request.message)

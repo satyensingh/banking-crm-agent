@@ -118,21 +118,29 @@ async def test_refusal_and_tool_limit_keep_thread_valid(tools):
     assert {c['id'] for m in msgs if m.type == 'ai' for c in m.tool_calls} <= answered
 
 
-# ---- /api/chat wiring and provider configuration (no tools or model needed) ----
+# ---- provider configuration and the UI hook ----
 
-def test_chat_validation_and_missing_api_key(monkeypatch):
-    from fastapi.testclient import TestClient
-    from app.main import app, get_agent
-    client = TestClient(app)
-    assert client.post('/api/chat', json={'sessionId': 's', 'message': ''}).status_code == 422
+async def test_missing_api_key_is_a_clean_503(monkeypatch):
+    from app.graph_agent import AgentUnavailable
     for provider, var in (('anthropic', 'ANTHROPIC_API_KEY'), ('openai', 'OPENAI_API_KEY')):
         monkeypatch.setenv('LLM_PROVIDER', provider)
         for v in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'):
             monkeypatch.delenv(v, raising=False)
-        app.dependency_overrides[get_agent] = lambda: GraphChatAgent()
-        r = client.post('/api/chat', json={'sessionId': 's', 'message': 'hi'})
-        assert r.status_code == 503 and var in r.json()['detail']
-    app.dependency_overrides.clear()
+        with pytest.raises(AgentUnavailable) as e:
+            await GraphChatAgent().reply('s', 'hi')
+        assert e.value.status_code == 503 and var in str(e.value)
+
+
+async def test_on_tool_hook_reports_each_call_and_survives_hook_errors(tools):
+    seen = []
+
+    async def hook(name, args, output, is_error):
+        seen.append((name, args, is_error, 'prospects' in output))
+        raise RuntimeError('UI exploded')
+
+    agent, _ = make_agent(tools, call_msg(use('t1', 'rank_prospects', limit=2)), say('ok'))
+    body = await agent.reply('s', 'top', on_tool=hook)
+    assert body['text'] == 'ok' and seen == [('rank_prospects', {'limit': 2}, False, True)]
 
 
 def test_unsupported_provider_and_unreachable_mcp(monkeypatch):
