@@ -180,7 +180,7 @@ All variables live in [.env.example](.env.example). Docker Compose reads `.env` 
 | `MCP_SERVER_URL` | chainlit | `http://127.0.0.1:8001/mcp` | Where the agent's MCP client finds the tool server. Compose sets `http://mcp:8001/mcp` |
 | `MCP_TRANSPORT` | mcp | `stdio` | `http` to serve over the network (Compose sets it) |
 | `MCP_PORT` | mcp | `8001` | MCP server port |
-| `DATABASE_URL` | mcp | built by Compose | Set only when running outside Docker |
+| `DATABASE_URL` | mcp | `postgresql://banking_user:banking_dev_password@localhost:5432/banking_crm` | Compose sets it to the `postgres` container. The default suits local development, so set it only for a different database |
 | `CHAINLIT_AUTH_SECRET` | chainlit | dev default in `.env.example` (**required**) | Signs login sessions. Compose won't start without it. Replace the dev default before sharing the app |
 | `RM_USERS` | chainlit | `rm` / `rm-demo-password` in `.env.example` | RM logins as `user=<hash>,user2=<hash>`. Empty = nobody can sign in. Replace the demo login before sharing the app |
 | `CHAT_MAX_MESSAGE_CHARS` | chainlit | `4000` | Longest chat message accepted |
@@ -211,9 +211,10 @@ pip install -r requirements-dev.txt
 
 ```bash
 cd backend && source .venv/bin/activate
-export DATABASE_URL='postgresql://banking_user:banking_dev_password@localhost:5432/banking_crm'
 MCP_TRANSPORT=http python -m app.mcp_server        # serves http://localhost:8001/mcp
 ```
+
+It connects to the database from step 1 by default. Set `DATABASE_URL` only if yours is elsewhere.
 
 **4. Chat UI** (terminal 2)
 
@@ -346,10 +347,10 @@ All tools are read-only (`readOnlyHint`), and queries run in `READ ONLY` transac
 
 ### Use the MCP server from other clients
 
-The MCP server is a standalone, standard MCP endpoint, so you can use it from Claude Desktop, Claude Code or any MCP client:
+The MCP server is a standalone, standard MCP endpoint, so you can use it from Claude Desktop, Claude Code or any MCP client. With the Docker stack running it's already at `http://localhost:8001/mcp`. To run it yourself, you need the database up and the venv from [Local development](#local-development-without-docker):
 
 ```bash
-cd backend
+cd backend && source .venv/bin/activate
 python -m app.mcp_server                       # stdio (e.g. Claude Desktop)
 MCP_TRANSPORT=http python -m app.mcp_server    # http://localhost:8001/mcp
 claude mcp add --transport http banking-crm http://localhost:8001/mcp    # Claude Code
