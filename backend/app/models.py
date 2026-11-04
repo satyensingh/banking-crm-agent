@@ -36,12 +36,37 @@ class ProspectQuery(CustomerSearch):
 
 
 class ScoreBreakdown(BaseModel):
+    """Points per factor (max): income 20, credit 20, balance 15, emi 15, interest 10, recency 5, timing 15."""
     income: int
     credit: int
     balance: int
     emi: int
     interest: int
     recency: int
+    timing: int = 0  # "this month" signals from transactions (TransactionInsights)
+
+
+Trend = Literal['RISING', 'STABLE', 'FALLING', 'UNKNOWN']
+
+
+class LifeEvent(BaseModel):
+    category: Literal['EDUCATION', 'TRAVEL', 'HOME_IMPROVEMENT', 'WEDDING']  # health spending is never used
+    month: str  # YYYY-MM
+    size_vs_monthly_income: str  # a band, e.g. '1-2x monthly income'; never the amount
+
+
+class TransactionInsights(BaseModel):
+    """Behaviour over the last 6 complete months, as trends and bands only (no amounts)."""
+    customer_id: int
+    months_analyzed: int
+    income_months: int
+    income_trend: Trend  # latest 3 months vs the 3 before (+/-5%)
+    discretionary_spend_trend: Trend  # shopping, latest 3 months vs the 3 before (+/-15%)
+    monthly_surplus_band: str | None  # (income - debits) / income
+    recent_life_events: list[LifeEvent]  # one-off spends in the last 2 complete months (medical excluded)
+    timing_signals: list[str]  # why now is (or is not) a good month to reach out
+    timing_points: int  # 0-15, the score's timing component
+    outreach_themes: list[str]  # neutral themes a draft may mention in general terms
 
 
 class Classification(BaseModel):
@@ -79,12 +104,16 @@ class Prospect(BaseModel):
     customer_id: int
     full_name: str
     city: str
+    occupation: str | None = None
+    tenure_years: int | None = None  # years as a customer
     income_band: str  # bands only: RMs must never see exact figures (bands.py)
     credit_band: str | None
     balance_band: str
     propensity_score: int
     suggested_product_code: str | None
     reason: str
+    timing_signals: list[str] = []
+    outreach_themes: list[str] = []
     preliminarily_eligible: bool
     whatsapp_contact_permitted: bool
 

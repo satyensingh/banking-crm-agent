@@ -1,4 +1,4 @@
-"""FastMCP server exposing the seven deterministic CRM capabilities as read-only MCP tools.
+"""FastMCP server exposing the eight deterministic CRM capabilities as read-only MCP tools.
 
 Run over stdio:            python -m app.mcp_server
 Run over streamable HTTP:  MCP_TRANSPORT=http python -m app.mcp_server   (port MCP_PORT, default 8001)
@@ -17,7 +17,7 @@ from pydantic import Field, ValidationError
 from .deps import get_tools
 from .models import (Classification, ContactPermission, CustomerSearch, CustomerSearchResponse,
                      CustomerSummary, ProductMatchResponse, ProspectQuery, ProspectResponse,
-                     Scoring, ToolErrorPayload)
+                     Scoring, ToolErrorPayload, TransactionInsights)
 from .repository import DatabaseUnavailable
 from .service import CRMTools, CustomerNotFound, ProductNotFound
 
@@ -98,6 +98,12 @@ def build_server(tools_provider: Callable[[], CRMTools] = get_tools) -> FastMCP:
     def get_customer_profile(customer_id: CustomerId) -> CustomerSummary:
         """Get one customer's minimised profile (no contact details or consent data; figures as bands)."""
         return CustomerSummary(**tools_provider().customer_profile(customer_id))
+
+    @tool
+    def get_transaction_insights(customer_id: CustomerId) -> TransactionInsights:
+        """Last 6 months of transactions as trends and bands: income and spending trends, surplus band, recent
+        life-event spends, and the timing signals behind the score's "this month" points. No amounts."""
+        return tools_provider().transaction_insights(customer_id)
 
     @tool
     def classify_high_value(customer_id: CustomerId) -> Classification:

@@ -1,10 +1,24 @@
 """Composable deterministic tool functions suitable for later LLM tool wrapping."""
 from __future__ import annotations
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import date, datetime, timezone
 from typing import Any
-from .models import CustomerSearch, Prospect, ProspectQuery, ProspectResponse
+from .models import CustomerSearch, Prospect, ProspectQuery, ProspectResponse, TransactionInsights
 from .rules import (balance_band, classify_high_value, contact_permission, credit_band, income_band,
-                    match_products, score_conversion)
+                    match_products, score_conversion, transaction_insights)
+
+INSIGHT_MONTHS = 6
+
+
+def _window_start(now: datetime) -> date:
+    """First day of the month INSIGHT_MONTHS complete months before the current one."""
+    index = now.year * 12 + now.month - 1 - INSIGHT_MONTHS
+    return date(index // 12, index % 12 + 1, 1)
+
+
+def _tenure_years(row: dict, now: datetime) -> int | None:
+    since = row.get('customer_since')
+    return (now.date() - since).days // 365 if since else None
 
 
 class CustomerNotFound(LookupError):
@@ -46,8 +60,19 @@ class CRMTools:
     def classify_high_value(self, customer_id: int):
         return classify_high_value(self.get_customer(customer_id))
 
+    def _insights(self, rows: list[dict], now: datetime) -> dict[int, TransactionInsights]:
+        by_customer = defaultdict(list)
+        for t in self.repo.get_transactions([r['customer_id'] for r in rows], _window_start(now)):
+            by_customer[t['customer_id']].append(t)
+        return {r['customer_id']: transaction_insights(r, by_customer[r['customer_id']], now) for r in rows}
+
+    def transaction_insights(self, customer_id: int) -> TransactionInsights:
+        now = self.clock()
+        return self._insights([self.get_customer(customer_id)], now)[customer_id]
+
     def score_conversion(self, customer_id: int):
-        return score_conversion(self.get_customer(customer_id), self.clock())
+        customer, now = self.get_customer(customer_id), self.clock()
+        return score_conversion(customer, now, self._insights([customer], now)[customer_id])
 
     def match_products(self, customer_id: int, product_code: str | None = None):
         customer = self.get_customer(customer_id)
@@ -65,15 +90,20 @@ class CRMTools:
         now = self.clock()
         rows = self.repo.list_customers_for_ranking(criteria.model_dump())
         products = self.repo.get_products()
-        output = []
-        for row in rows:
+        candidates = []
+        for row in rows:  # eligibility and consent do not depend on transactions: filter first
             if criteria.high_value_only and not classify_high_value(row).high_value:
                 continue
-            score = score_conversion(row, now)
-            if not score.preliminarily_eligible:
+            base = score_conversion(row, now)
+            if not base.preliminarily_eligible:
                 continue
-            if criteria.contactable_only and not score.whatsapp_contact_permitted:
+            if criteria.contactable_only and not base.whatsapp_contact_permitted:
                 continue
+            candidates.append(row)
+        insights = self._insights(candidates, now)  # one transactions query for all candidates
+        output = []
+        for row in candidates:
+            score = score_conversion(row, now, insights[row['customer_id']])
             recommendations = match_products(row, products, now)
             suitable = [p for p in recommendations if p.suitable]
             if criteria.product_code:
@@ -89,11 +119,14 @@ class CRMTools:
                 selected = suitable_pl[0]
             output.append(Prospect(
                 customer_id=row['customer_id'], full_name=row['full_name'], city=row['city'],
+                occupation=row.get('occupation'), tenure_years=_tenure_years(row, now),
                 income_band=income_band(row['monthly_income_inr']), credit_band=credit_band(row.get('credit_score')),
                 balance_band=balance_band(row['current_balance_inr']),
                 propensity_score=score.propensity_score,
                 suggested_product_code=selected.product_code,
                 reason='; '.join(score.reasons),
+                timing_signals=insights[row['customer_id']].timing_signals,
+                outreach_themes=insights[row['customer_id']].outreach_themes,
                 preliminarily_eligible=score.preliminarily_eligible,
                 whatsapp_contact_permitted=score.whatsapp_contact_permitted,
             ))

@@ -38,7 +38,8 @@ CREATE TABLE transactions (
     account_id BIGINT NOT NULL REFERENCES accounts(account_id),
     transaction_at TIMESTAMP NOT NULL,
     direction VARCHAR(6) NOT NULL CHECK (direction IN ('CREDIT','DEBIT')),
-    category VARCHAR(30) NOT NULL CHECK (category IN ('SALARY','BUSINESS_INCOME','RENT','SHOPPING','UTILITIES','TRANSFER','LOAN_EMI')),
+    category VARCHAR(30) NOT NULL CHECK (category IN ('SALARY','BUSINESS_INCOME','RENT','SHOPPING','UTILITIES','TRANSFER','LOAN_EMI',
+                                                      'EDUCATION','MEDICAL','TRAVEL','HOME_IMPROVEMENT','WEDDING')),
     amount_inr NUMERIC(12,2) NOT NULL CHECK (amount_inr > 0),
     description TEXT
 );
@@ -142,6 +143,42 @@ SELECT 1000000 + seq * 10 + k.kind, account_id,
        CASE WHEN k.kind = 1 THEN 'Recurring monthly income' ELSE 'Regular monthly expense' END
 FROM base CROSS JOIN (VALUES (1),(2),(3),(4)) AS k(kind);
 
+-- Month-to-month variation, so transaction trends carry signal (deterministic by customer_id).
+-- "Latest 3 months" = the three complete months before the current one.
+-- Income up ~12% (a raise or a growing business):
+UPDATE transactions t SET amount_inr = round(t.amount_inr * 1.12, 2)
+FROM accounts a
+WHERE a.account_id = t.account_id AND a.customer_id % 4 = 1
+  AND t.category IN ('SALARY','BUSINESS_INCOME')
+  AND t.transaction_at >= date_trunc('month', CURRENT_DATE) - interval '3 months';
+-- Income down ~15%:
+UPDATE transactions t SET amount_inr = round(t.amount_inr * 0.85, 2)
+FROM accounts a
+WHERE a.account_id = t.account_id AND a.customer_id % 10 = 3 AND a.customer_id % 4 <> 1
+  AND t.category IN ('SALARY','BUSINESS_INCOME')
+  AND t.transaction_at >= date_trunc('month', CURRENT_DATE) - interval '3 months';
+-- Discretionary spending up ~40%:
+UPDATE transactions t SET amount_inr = round(t.amount_inr * 1.40, 2)
+FROM accounts a
+WHERE a.account_id = t.account_id AND a.customer_id % 3 = 2
+  AND t.category = 'SHOPPING'
+  AND t.transaction_at >= date_trunc('month', CURRENT_DATE) - interval '3 months';
+
+-- One-off life-event spends in the last two complete months (0.8x-2x monthly income): typical
+-- personal-loan triggers, and the "this month" timing signal. MEDICAL rows are deliberately included:
+-- the app must ignore health spending for both scoring and outreach.
+INSERT INTO transactions (transaction_id,account_id,transaction_at,direction,category,amount_inr,description)
+SELECT 1900000 + c.customer_id, a.account_id,
+       (date_trunc('month', CURRENT_DATE) - (1 + c.customer_id % 2) * interval '1 month'
+        + ((c.customer_id % 20) + 3) * interval '1 day' + interval '15 hours')::timestamp,
+       'DEBIT', ev.category, round(c.monthly_income_inr * (0.8 + (c.customer_id % 4) * 0.4), 2), ev.description
+FROM customers c JOIN accounts a USING (customer_id)
+JOIN (VALUES (1,'EDUCATION','Tuition fee payment'), (2,'HOME_IMPROVEMENT','Home renovation contractor'),
+             (5,'TRAVEL','International travel booking'), (7,'WEDDING','Wedding venue advance'),
+             (9,'MEDICAL','Hospital bill payment')) AS ev(slot,category,description)
+  ON c.customer_id % 10 = ev.slot
+WHERE c.customer_id % 3 <> 0;
+
 -- Existing loans; these should affect suitability and DTI checks.
 INSERT INTO customer_products(customer_id,product_id,status,outstanding_inr,monthly_emi_inr,opened_on)
 SELECT customer_id,
@@ -201,7 +238,7 @@ WITH tx AS (
   SELECT customer_id,bool_or(product_id IN (1,2) AND status='PENDING') AS has_pending_pl_application
   FROM loan_applications GROUP BY customer_id
 )
-SELECT c.customer_id,c.full_name,c.city,c.phone_e164,c.occupation,c.monthly_income_inr,
+SELECT c.customer_id,c.full_name,c.city,c.phone_e164,c.occupation,c.customer_since,c.monthly_income_inr,
        c.credit_score,c.risk_band,c.kyc_status,c.whatsapp_opt_in,c.do_not_contact,
        a.status AS account_status,a.current_balance_inr,
        tx.avg_monthly_income_credit_inr,tx.income_credit_months,tx.avg_monthly_debits_inr,
@@ -219,6 +256,8 @@ LEFT JOIN application ON application.customer_id=c.customer_id;
 
 -- Business rules are transparent and testable; score is a heuristic ranking (NOT a
 -- calibrated conversion probability). Avoid describing 80/100 as an 80% conversion chance.
+-- Reference ranking for the SQL use cases below. The app scores in backend/app/rules.py: the same base
+-- factors, rescaled to leave 15 of 100 points for a transaction-based "this month" timing component.
 CREATE VIEW personal_loan_prospects AS
 WITH eligible AS (
  SELECT f.*,CASE WHEN f.kyc_status='VERIFIED'

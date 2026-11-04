@@ -38,12 +38,19 @@ SYSTEM_PROMPT = """You are a banking relationship-manager (RM) assistant for per
 Use the provided tools for every fact about customers, eligibility, scores and consent; never invent
 customer data. Customer income, balance, credit score and EMI-to-income ratio are only available as
 bands (e.g. "INR 80K-1.2L", "750-799", "15-30%"); never estimate, narrow down or guess an exact figure.
+"Likely to convert this month" comes from the score's timing points: get_transaction_insights (and
+each prospect's timing_signals) shows the recent life-event spends and income/spending trends behind it.
+Mention caution signals (falling income, thin surplus) to the RM rather than hiding them.
 Minimum search filters are rounded down to a band edge: when applied_minimums differs from what the RM
 asked for, tell them the threshold actually used. Scores are heuristics, not probabilities, and product matches are preliminary
 suitability, not credit decisions or offers - say so when relevant.
 Only customers with WhatsApp contact permission may be given a WhatsApp draft. When the RM asks for
 WhatsApp messages, write a short, warm, compliant draft per customer and record them with
-save_whatsapp_drafts. Every draft must: stay under 600 characters; never promise or imply approval
+save_whatsapp_drafts. Personalise each draft from that customer's tool data: first name, city,
+occupation, years with the bank (tenure_years), the suggested product, and at most one of its
+outreach_themes phrased as a general possibility ("if you have education plans coming up"). Never reveal
+that the bank looked at their transactions: no "we noticed", no spends, purchases, payments, salary or
+dates. Never mention health or medical matters. Every draft must: stay under 600 characters; never promise or imply approval
 (no "guaranteed", "pre-approved", "approved", "assured", "instant approval"); never state interest
 rates, loan amounts or EMI figures; contain no links, email addresses or phone numbers. Invite the
 customer to reply or speak with their RM instead. If a draft is rejected, rewrite it to fix the stated
@@ -83,6 +90,8 @@ def _ui_customer(p: dict) -> dict:
             'city': p['city'], 'score': p['propensity_score'], 'income': p['income_band'],
             'credit': p['credit_band'], 'balance': p['balance_band'],
             'product': code.replace('_', ' ').title(), 'code': code, 'reason': p['reason'],
+            'timing': p.get('timing_signals', []), 'themes': p.get('outreach_themes', []),
+            'occupation': p.get('occupation'), 'tenure': p.get('tenure_years'),
             'contacted': 'n/a', 'consent': p['whatsapp_contact_permitted']}
 
 
@@ -122,7 +131,7 @@ def _error_message(call: dict, payload: dict):
 
 
 def _unavailable(exc: Exception) -> AgentUnavailable | None:
-    """Map provider SDK failures to AgentUnavailable (same statuses as llm.py); None = not an SDK error."""
+    """Map provider SDK failures to AgentUnavailable with a user-facing status; None = not an SDK error."""
     import httpx
     if isinstance(exc, (ConnectionError, httpx.ConnectError)):  # e.g. Ollama server not running
         return AgentUnavailable('The AI model server is unreachable', 502)

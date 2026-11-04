@@ -11,7 +11,7 @@ from test_rules import NOW
 
 EXPECTED_TOOLS = {'search_customers', 'get_customer_profile', 'classify_high_value',
                   'score_conversion', 'match_products', 'check_whatsapp_permission',
-                  'rank_prospects'}
+                  'rank_prospects', 'get_transaction_insights'}
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ async def call_error(client, name, args):
     return info.value
 
 
-async def test_exposes_exactly_seven_read_only_tools_with_schemas(client):
+async def test_exposes_exactly_eight_read_only_tools_with_schemas(client):
     tools = await client.list_tools()
     assert {t.name for t in tools} == EXPECTED_TOOLS
     for t in tools:
@@ -70,6 +70,15 @@ async def test_score_conversion(client):
     assert data['score_type'] == 'heuristic_not_probability'
 
 
+async def test_transaction_insights_tool_returns_bands_and_signals_only(client):
+    data = (await client.call_tool('get_transaction_insights', {'customer_id': 42})).structured_content
+    assert data['income_trend'] == 'RISING' and data['timing_points'] == 15
+    assert data['recent_life_events'] == [{'category': 'EDUCATION', 'month': '2026-10',
+                                           'size_vs_monthly_income': '1-2x monthly income'}]
+    assert data['outreach_themes'] == ['education plans']
+    assert '180000' not in str(data) and '130000' not in str(data)  # no amounts
+
+
 async def test_match_products_all_and_filtered(client):
     data = (await client.call_tool('match_products', {'customer_id': 42})).structured_content
     assert data['customer_id'] == 42 and data['matches'][0]['suitable']
@@ -87,12 +96,18 @@ async def test_rank_prospects_sorted_and_excludes_weak_credit(client):
     data = (await client.call_tool('rank_prospects', {'limit': 10})).structured_content
     assert [p['customer_id'] for p in data['prospects']] == [42, 21]
     assert data['prospects'][0]['suggested_product_code'] == 'PL_PREMIUM'
+    top = data['prospects'][0]
+    assert top['propensity_score'] == 100 and top['tenure_years'] == 7 and top['occupation'] == 'SALARIED'
+    assert top['timing_signals'][0].startswith('Education spend last month')
+    assert top['outreach_themes'] == ['education plans'] and 'Education spend' in top['reason']
+    assert data['prospects'][1]['timing_signals'] == [] and data['prospects'][1]['outreach_themes'] == []
     only = (await client.call_tool('rank_prospects', {'high_value_only': True})).structured_content
     assert all(p['customer_id'] in (42, 21) for p in only['prospects'])
 
 
 @pytest.mark.parametrize('name,args', [
     ('score_conversion', {'customer_id': 999}),
+    ('get_transaction_insights', {'customer_id': 999}),
     ('classify_high_value', {'customer_id': 999}),
     ('check_whatsapp_permission', {'customer_id': 999}),
     ('get_customer_profile', {'customer_id': 999}),
@@ -191,3 +206,10 @@ async def test_minimum_filters_are_snapped_and_reported(name):
         {'min_income_inr': 120000, 'min_credit_score': 750, 'min_balance_inr': 50000}
     assert (seen[0]['min_income_inr'], seen[0]['min_credit_score'], seen[0]['min_balance_inr']) == \
         (120000, 750, 50000)
+
+
+def test_ranking_fetches_transactions_once_for_all_candidates():
+    from app.models import ProspectQuery
+    repo = FakeRepo()
+    CRMTools(repo, clock=lambda: NOW).rank_prospects(ProspectQuery())
+    assert repo.transaction_queries == 1

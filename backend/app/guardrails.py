@@ -26,6 +26,12 @@ _DRAFT_RULES = [
     ('RATE_OR_AMOUNT', 'must not state interest rates, loan amounts or EMI figures',
      re.compile(r'\d+(\.\d+)?\s*(%|percent\b|p\.?a\.?\b)|(₹|\brs\.?|\binr\b)\s*\d|'
                 r'\b\d[\d,.]*\s*(lakh|lakhs|lac|lacs|crore|crores|k)\b|\bemi\s+of\b', re.I)),
+    ('TRANSACTION_REFERENCE', 'must not reveal that the bank looked at the customer\'s transactions or spending',
+     re.compile(r'\b(we|i)\s+(have\s+)?(noticed|saw|see|observed|spotted)\b|'
+                r'\byour\s+(recent\s+)?(spends?|spending|transactions?|purchases?|payments?|salary|bills?)\b|'
+                r'\b(spent|paid)\s+(on|for)\b', re.I)),
+    ('SENSITIVE_TOPIC', 'must not mention health or medical matters',
+     re.compile(r'\b(medical|hospital\w*|health|illness|treatment|surgery|doctor|medicine)\b', re.I)),
     ('CONTACT_OR_LINK', 'must not contain links, email addresses or phone numbers',
      re.compile(r'https?://|\bwww\.|\b[\w.+-]+@[\w-]+\.[\w.]+\b|\+?\d[\d\s-]{8,}\d')),
 ]

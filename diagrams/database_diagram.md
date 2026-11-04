@@ -90,3 +90,5 @@ erDiagram
 ```
 
 Views (not shown in the diagram): `customer_features`, `personal_loan_prospects`.
+
+Transaction categories: regular `SALARY`, `BUSINESS_INCOME`, `RENT`, `SHOPPING`, `UTILITIES`, `TRANSFER`, `LOAN_EMI`, plus one-off life events `EDUCATION`, `MEDICAL`, `TRAVEL`, `HOME_IMPROVEMENT`, `WEDDING` (the signals behind `get_transaction_insights`).

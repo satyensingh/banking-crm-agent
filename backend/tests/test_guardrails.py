@@ -41,6 +41,25 @@ def test_links_and_contact_details_are_rejected(text):
     assert 'CONTACT_OR_LINK' in codes(text)
 
 
+@pytest.mark.parametrize('text', [
+    'We noticed your recent spending on travel', 'I saw your tuition payment', 'Your recent transactions show',
+    'Since you spent on home repairs', 'Your salary has gone up', 'We have observed your purchases'])
+def test_revealing_transaction_monitoring_is_rejected(text):
+    assert 'TRANSACTION_REFERENCE' in codes(text)
+
+
+@pytest.mark.parametrize('text', ['Help with medical bills', 'After your hospitalisation', 'For your health needs'])
+def test_health_topics_are_rejected(text):
+    assert 'SENSITIVE_TOPIC' in codes(text)
+
+
+def test_personalised_theme_draft_passes():
+    draft = ('Hi Asha, thank you for 7 years with us in Pune. If you have education plans coming up, a '
+             'Personal Loan - Premium could help. We would love to see how we can support you: reply here '
+             'or speak with your RM.')
+    assert check_draft(draft) == []
+
+
 def test_length_limit():
     assert codes('a' * DRAFT_MAX_CHARS) == set()
     assert codes('a' * (DRAFT_MAX_CHARS + 1)) == {'TOO_LONG'}

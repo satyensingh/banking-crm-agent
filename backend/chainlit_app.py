@@ -81,7 +81,8 @@ def prospects_frame(customers: list[dict]) -> pd.DataFrame:
     return pd.DataFrame([{
         'Customer': c['name'], 'ID': c['id'], 'City': c['city'], 'Score': c['score'],
         'Monthly income band': c['income'], 'Credit score band': c['credit'],
-        'Balance band': c['balance'], 'Product': c['product'], 'Why': c['reason'],
+        'Balance band': c['balance'], 'Product': c['product'],
+        'This month': '; '.join(c.get('timing') or []) or '-', 'Why': c['reason'],
         'WhatsApp permitted': 'Yes' if c['consent'] else 'No'} for c in customers])
 
 

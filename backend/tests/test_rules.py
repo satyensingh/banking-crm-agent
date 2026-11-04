@@ -1,10 +1,10 @@
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 import pytest
 from app.models import CustomerSearch, ProspectQuery
 from app.rules import (balance_band, classify_high_value, contact_permission, credit_band, emi_band, income_band,
-                       match_products, score_conversion)
+                       match_products, score_conversion, transaction_insights)
 
 NOW = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
 
@@ -17,7 +17,8 @@ def customer(**changes):
              existing_emi_to_income_ratio=Decimal('0.10'),
              has_active_personal_loan=False, has_pending_pl_application=False,
              last_pl_declined_at=None, last_pl_contact_at=None,
-             pl_interest_history=True, whatsapp_opt_in=True, do_not_contact=False)
+             pl_interest_history=True, whatsapp_opt_in=True, do_not_contact=False,
+             customer_since=date(2019, 6, 1))
     c.update(changes)
     return c
 
@@ -29,9 +30,14 @@ def product(code='PL_PREMIUM', min_income=80000, min_score=750):
 
 
 def test_best_score_is_explainable_not_probability():
-    result = score_conversion(customer(), NOW)
-    assert result.propensity_score == 100
+    from fakes import TRANSACTIONS
+    base = score_conversion(customer(), NOW)
+    assert base.propensity_score == 85 and base.breakdown.timing == 0  # no transaction insights: no timing
+    insights = transaction_insights(customer(), [t for t in TRANSACTIONS if t['customer_id'] == 42], NOW)
+    result = score_conversion(customer(), NOW, insights)
+    assert result.propensity_score == 100 and result.breakdown.timing == 15
     assert sum(result.breakdown.model_dump().values()) == 100
+    assert 'Income up over the last 3 months' in result.reasons
     assert result.score_type == 'heuristic_not_probability'
     assert result.preliminarily_eligible and result.whatsapp_contact_permitted
 
@@ -150,3 +156,63 @@ def test_reasons_never_carry_exact_figures():
     assert 'Existing EMI/income < 15%' in text
     for exact in ('123457', '123,457', '1,23,457', '234568', '234,568', '2,34,568', '777', '12.3%', '0.123'):
         assert exact not in text
+
+
+# ---- transaction insights ("this month" timing) ----
+
+def tx(back, category, amount, direction='DEBIT', day=10):
+    from fakes import month_start
+    return dict(customer_id=42, transaction_at=month_start(back).replace(day=day), direction=direction,
+                category=category, amount_inr=Decimal(amount))
+
+
+def history(income=100000, recent_income=None, shopping=10000, recent_shopping=None):
+    rows = []
+    for back in range(1, 7):
+        recent = back <= 3
+        rows.append(tx(back, 'SALARY', recent_income if recent and recent_income else income, 'CREDIT', day=1))
+        rows.append(tx(back, 'RENT', 22000))
+        rows.append(tx(back, 'SHOPPING', recent_shopping if recent and recent_shopping else shopping))
+    return rows
+
+
+def test_flat_history_has_no_timing_points():
+    i = transaction_insights(customer(), history(), NOW)
+    assert (i.income_trend, i.discretionary_spend_trend, i.timing_points) == ('STABLE', 'STABLE', 0)
+    assert i.income_months == 6 and i.monthly_surplus_band == '40%+' and i.timing_signals == []
+
+
+def test_each_timing_signal_and_the_cap():
+    assert transaction_insights(customer(), history(recent_income=106000), NOW).timing_points == 4
+    assert transaction_insights(customer(), history(recent_shopping=12000), NOW).timing_points == 3
+    event = transaction_insights(customer(), history() + [tx(2, 'WEDDING', 250000)], NOW)
+    assert event.timing_points == 8 and event.outreach_themes == ['family celebrations']
+    assert event.timing_signals == ['Wedding spend 2 months ago (2x+ monthly income)']
+    full = transaction_insights(customer(), history(recent_income=120000, recent_shopping=20000)
+                                + [tx(1, 'TRAVEL', 50000), tx(1, 'EDUCATION', 90000)], NOW)
+    assert full.timing_points == 15 and full.outreach_themes == ['travel plans', 'education plans']
+
+
+def test_caution_signals_score_nothing():
+    i = transaction_insights(customer(), history(recent_income=80000, shopping=70000), NOW)
+    assert i.income_trend == 'FALLING' and i.timing_points == 0 and i.monthly_surplus_band == '< 10%'
+    assert 'Income down over the last 3 months (caution)' in i.timing_signals
+    assert 'Monthly surplus below 10% of income (caution)' in i.timing_signals
+
+
+def test_health_spending_is_ignored_entirely():
+    i = transaction_insights(customer(), history() + [tx(1, 'MEDICAL', 300000)], NOW)
+    assert i.recent_life_events == [] and i.timing_points == 0 and i.monthly_surplus_band == '40%+'
+    assert 'medical' not in str(i.model_dump()).lower()
+
+
+def test_only_the_last_six_complete_months_count():
+    current_month = dict(tx(1, 'EDUCATION', 90000), transaction_at=NOW.replace(day=2))
+    old = [tx(3, 'EDUCATION', 90000), tx(7, 'SALARY', 999999, 'CREDIT')]  # 3 back: not "recent"; 7 back: outside
+    i = transaction_insights(customer(), history() + [current_month] + old, NOW)
+    assert i.recent_life_events == [] and i.income_trend == 'STABLE'
+
+
+def test_no_transactions_is_unknown_not_an_error():
+    i = transaction_insights(customer(), [], NOW)
+    assert (i.income_trend, i.income_months, i.monthly_surplus_band, i.timing_points) == ('UNKNOWN', 0, None, 0)

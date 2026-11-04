@@ -58,6 +58,21 @@ def emi_band(value: Any) -> str | None:
     return '30-40%' if ratio <= Decimal('0.40') else '> 40%'
 
 
+def surplus_band(ratio: Any) -> str | None:
+    """Share of income left after all debits, (income - debits) / income."""
+    if ratio is None:
+        return None
+    r = _amount(ratio)
+    return '< 10%' if r < Decimal('0.10') else '10-25%' if r < Decimal('0.25') else \
+        '25-40%' if r < Decimal('0.40') else '40%+'
+
+
+def multiple_band(ratio: Any) -> str:
+    """A one-off amount relative to monthly income, e.g. '1-2x monthly income'."""
+    r = _amount(ratio)
+    return '< 1x monthly income' if r < 1 else '1-2x monthly income' if r < 2 else '2x+ monthly income'
+
+
 def snap_down(value: Any, edges: tuple):
     """Round a minimum filter down to the nearest band edge; below the lowest edge means no filter (None).
     Rounding down keeps results a superset of what was asked, never hiding an eligible customer."""

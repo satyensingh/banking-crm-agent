@@ -5,6 +5,8 @@ from typing import Any
 
 FEATURES = 'banking_crm_demo.customer_features'
 PRODUCTS = 'banking_crm_demo.products'
+TRANSACTIONS = 'banking_crm_demo.transactions'
+ACCOUNTS = 'banking_crm_demo.accounts'
 
 
 class DatabaseUnavailable(RuntimeError):
@@ -61,6 +63,16 @@ class PostgresRepository:
         if product_code:
             return self._query(f'SELECT * FROM {PRODUCTS} WHERE active = TRUE AND product_code = %s ORDER BY product_id', (product_code,))
         return self._query(f'SELECT * FROM {PRODUCTS} WHERE active = TRUE ORDER BY product_id')
+
+    def get_transactions(self, customer_ids: list[int], since) -> list[dict[str, Any]]:
+        """Transactions on or after `since` for several customers in one query (no N+1 when ranking)."""
+        if not customer_ids:
+            return []
+        return self._query(
+            f'SELECT a.customer_id, t.transaction_at, t.direction, t.category, t.amount_inr '
+            f'FROM {TRANSACTIONS} t JOIN {ACCOUNTS} a ON a.account_id = t.account_id '
+            f'WHERE a.customer_id = ANY(%s) AND t.transaction_at >= %s '
+            f'ORDER BY a.customer_id, t.transaction_at', (list(customer_ids), since))
 
     def list_customers_for_ranking(self, filters: dict[str, Any]) -> list[dict[str, Any]]:
         # Scan all matching rows to score globally, then apply limit/offset in the service.
