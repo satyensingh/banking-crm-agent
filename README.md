@@ -151,7 +151,6 @@ docker compose up -d postgres
 **2. Python environment** (Python 3.12)
 
 ```bash
-cd backend
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt
@@ -160,7 +159,7 @@ pip install -r requirements-dev.txt
 **3. MCP server** (terminal 1)
 
 ```bash
-cd backend && source .venv/bin/activate
+source .venv/bin/activate
 MCP_TRANSPORT=http python -m app.mcp_server        # serves http://localhost:8001/mcp
 ```
 
@@ -169,20 +168,19 @@ It connects to the database from step 1 by default. Set `DATABASE_URL` only if y
 **4. Chat UI** (terminal 2)
 
 ```bash
-cd backend && source .venv/bin/activate
-set -a; source ../.env; set +a      # provider + key, dev secret and demo login (rm / rm-demo-password)
+source .venv/bin/activate
+set -a; source .env; set +a      # provider + key, dev secret and demo login (rm / rm-demo-password)
 export OLLAMA_BASE_URL=http://localhost:11434   # only with Ollama: .env points at Docker's host.docker.internal
 chainlit run chainlit_app.py -w     # http://localhost:8000, reloads on change
 ```
 
-`MCP_SERVER_URL` defaults to `http://127.0.0.1:8001/mcp`, which is the server from step 3. The audit log goes to `backend/logs/audit.jsonl`.
+`MCP_SERVER_URL` defaults to `http://127.0.0.1:8001/mcp`, which is the server from step 3. The audit log goes to `logs/audit.jsonl`.
 
 ## Replacing the dev logins
 
-Do this before the app is reachable by anyone but you. It needs the backend Python environment (see [Local development](#local-development-without-docker)), or run the same commands in the container with `docker compose run --rm --no-deps chainlit <command>`.
+Do this before the app is reachable by anyone but you. It needs the Python environment (see [Local development](#local-development-without-docker)), or run the same commands in the container with `docker compose run --rm --no-deps chainlit <command>`.
 
 ```bash
-cd backend
 chainlit create-secret                     # put the value in CHAINLIT_AUTH_SECRET in .env
 python -m app.guardrails hash-password     # prompts for a password (12+ chars), prints a hash
 ```
@@ -200,7 +198,7 @@ The `SECURITY` warnings in `docker compose logs chainlit` disappear once both de
 After installing the development dependencies using the local setup above:
 
 ```bash
-cd backend && source .venv/bin/activate
+source .venv/bin/activate
 pytest -q
 ```
 
@@ -229,7 +227,7 @@ Tests need no database, network or API key. See [test coverage and extension gui
 | `Found orphan containers` warning | A service was renamed or removed. Clean up with `docker compose up -d --remove-orphans`. |
 | Chainlit log: *Ignoring pre-2.12.0 MCP config sections in /app/.chainlit/config.toml* | Harmless. Chainlit's own MCP feature is off (the app's tools come from the `mcp` service). Newer Chainlit versions flag the old `[features.mcp.*]` sections in `config.toml`, and deleting those sections silences it. |
 | Chainlit fails with *"Timeout should be used inside a task"* | You're on Python 3.14. Use Python 3.12 (the Docker image already does). |
-| `ModuleNotFoundError` when running tests or Chainlit locally | Activate the venv and run from `backend/`: `cd backend && source .venv/bin/activate`. |
+| `ModuleNotFoundError` when running tests or Chainlit locally | Activate the venv and run from the repository root: `source .venv/bin/activate`. |
 | Weak or wrong tool use with Ollama | Try `OLLAMA_REASONING=true` or a larger `OLLAMA_MODEL`. 8B models are less reliable than hosted ones. |
 
 ## Documentation and diagrams

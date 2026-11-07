@@ -22,7 +22,7 @@ services:
   # Chat UI: Chainlit -> LangGraph agent -> LLM, tools via the mcp service (FastMCP) -> PostgreSQL
   chainlit:
     build:
-      context: ./backend
+      context: .
     container_name: banking-crm-chainlit
     restart: unless-stopped
     command: ["chainlit", "run", "chainlit_app.py", "--host", "0.0.0.0", "--port", "8000", "--headless"]
@@ -56,7 +56,7 @@ services:
 
   mcp:
     build:
-      context: ./backend
+      context: .
     container_name: banking-crm-mcp
     restart: unless-stopped
     command: ["python", "-m", "app.mcp_server"]

@@ -1,0 +1,12 @@
+# Only runtime source and dependencies belong in the build context.
+*
+!Dockerfile
+!requirements.txt
+!app/
+!app/**
+!chainlit_app.py
+!chainlit.md
+!.chainlit/
+!.chainlit/config.toml
+**/__pycache__/
+**/*.py[cod]

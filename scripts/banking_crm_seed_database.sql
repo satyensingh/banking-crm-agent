@@ -256,7 +256,7 @@ LEFT JOIN application ON application.customer_id=c.customer_id;
 
 -- Business rules are transparent and testable; score is a heuristic ranking (NOT a
 -- calibrated conversion probability). Avoid describing 80/100 as an 80% conversion chance.
--- Reference ranking for the SQL use cases below. The app scores in backend/app/rules.py: the same base
+-- Reference ranking for the SQL use cases below. The app scores in app/rules.py: the same base
 -- factors, rescaled to leave 15 of 100 points for a transaction-based "this month" timing component.
 CREATE VIEW personal_loan_prospects AS
 WITH eligible AS (

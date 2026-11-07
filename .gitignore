@@ -15,11 +15,10 @@ venv/
 
 # Audit log (contains customer data)
 logs/
-backend/logs/
 
 # Chainlit runtime files
-backend/.files/
-backend/.chainlit/translations/
+.files/
+.chainlit/translations/
 
 # OS / editor
 .DS_Store

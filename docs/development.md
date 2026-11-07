@@ -2,42 +2,44 @@
 
 [Setup and run](../README.md) · [Documentation index](README.md)
 
-Commands in this guide run from the repository root unless a step changes directory. Python module paths such as `app/rules.py` are relative to `backend/`.
+Commands in this guide run from the repository root unless a step changes directory. Python module paths such as `app/rules.py` are relative to the repository root.
 
 ## Project structure
 
 ```text
 .
-├── docker-compose.yml            # postgres, mcp, chainlit
-├── .env.example                  # every setting, documented
+├── .env.example                 # documented configuration
+├── .chainlit/config.toml        # Chainlit UI settings
+├── .dockerignore               # restrict build context to runtime files
+├── Dockerfile                  # shared image for MCP and Chainlit
+├── docker-compose.yml          # PostgreSQL, MCP and Chainlit
+├── requirements.txt            # runtime dependencies
+├── requirements-dev.txt        # test dependencies
+├── pytest.ini                  # test discovery and Python path
+├── chainlit_app.py             # chat UI, authentication and audit calls
+├── chainlit.md                 # welcome screen text
+├── app/
+│   ├── graph_agent.py          # agent loop, providers and session state
+│   ├── guardrails.py           # content checks, authentication and limits
+│   ├── audit.py                # append-only JSON Lines audit log
+│   ├── mcp_server.py           # typed MCP tools and structured errors
+│   ├── service.py              # tool composition and ranking
+│   ├── rules.py                # deterministic business policies
+│   ├── repository.py           # parameterized, read-only PostgreSQL access
+│   ├── bands.py                # financial data bands
+│   ├── models.py               # typed request and response models
+│   └── deps.py                 # repository and service wiring
+├── tests/                      # tests with fake repository and model
 ├── scripts/
-│   └── banking_crm_seed_database.sql   # schema + 150 synthetic customers, loaded on first DB start
-├── docs/                        # architecture, usage, rules, tools, development and design
-├── diagrams/                    # architecture, process flow and database diagrams
-└── backend/
-    ├── chainlit_app.py           # Chainlit UI: starters, live tool steps, table + CSV, drafts
-    ├── chainlit.md               # welcome screen text
-    ├── .chainlit/config.toml     # Chainlit settings (app name, tool-step display)
-    ├── Dockerfile                # one image for both the mcp and chainlit services
-    ├── requirements.txt          # runtime deps    ·  requirements-dev.txt adds test deps
-    ├── app/
-    │   ├── graph_agent.py        # LangGraph agent, LLM providers, MCP client, consent guard
-    │   ├── guardrails.py         # draft content rules, RM password auth, rate limit, message cap
-    │   ├── audit.py              # append-only JSON Lines audit log
-    │   ├── mcp_server.py         # FastMCP server: 8 read-only tools, validation, structured errors
-    │   ├── service.py            # CRMTools: repository + rules
-    │   ├── rules.py              # pure business rules (classification, transaction insights, scoring, products, consent)
-    │   ├── repository.py         # parameterised, read-only SQL
-    │   ├── bands.py              # income/balance/credit/ratio bands: no exact figures leave the service
-    │   ├── models.py             # Pydantic request/response models
-    │   └── deps.py               # wiring for the repository and tools
-    └── tests/                    # pytest suites (no DB, network or API key needed)
+│   └── banking_crm_seed_database.sql
+├── docs/                       # detailed guides
+└── diagrams/                   # architecture, process flow and database
 ```
 
 ## Testing
 
 ```bash
-cd backend && source .venv/bin/activate
+source .venv/bin/activate
 pytest -q
 ```
 

@@ -121,7 +121,7 @@ def test_audit_failure_never_raises(tmp_path, monkeypatch):
 def _env_example() -> dict[str, str]:
     from pathlib import Path
     values = {}
-    for line in (Path(__file__).resolve().parents[2] / '.env.example').read_text().splitlines():
+    for line in (Path(__file__).resolve().parents[1] / '.env.example').read_text().splitlines():
         key, sep, value = line.partition('=')
         if sep and not key.startswith('#'):
             values[key.strip()] = value.strip()
