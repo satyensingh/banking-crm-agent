@@ -210,3 +210,36 @@ async def test_ollama_down_or_model_missing_map_to_clean_errors(tools):
         with pytest.raises(AgentUnavailable) as e:
             await agent.reply('s', 'hi')
         assert e.value.status_code == status and hint in str(e.value)
+
+
+async def test_large_tool_turn_preserves_request_and_followup_selection(tools):
+    # A batch larger than the old 40-message budget used to erase the only human request.
+    batch = [use(f'p{i}', 'get_customer_profile', customer_id=42) for i in range(45)]
+    agent, model = make_agent(
+        tools, call_msg(use('rank', 'rank_prospects', limit=2)), call_msg(*batch), say('ranked'),
+        call_msg(use('consent', 'check_whatsapp_permission', customer_id=42)),
+        call_msg(use('draft', 'save_whatsapp_drafts', drafts=[
+            {'customer_id': 42, 'content': 'Hi, reply to your RM to discuss your plans.'}])), say('drafted'))
+    await agent.reply('s', 'Find two high-value prospects')
+    active = model.calls[3]['messages']
+    assert [m.content for m in active if m.type == 'human'] == ['Find two high-value prospects']
+    assert len([m for m in active if m.type == 'tool']) == 46
+    body = await agent.reply('s', 'Draft for the first of those customers')
+    followup = model.calls[4]['messages']
+    assert followup[-1].content == 'Draft for the first of those customers'
+    assert 'Selected shortlist' in followup[0].content
+    assert '"customer_id": 42' in followup[0].content
+    assert body['result']['messages'][0]['customerName'] == body['result']['customers'][0]['name']
+    assert body['tools'][0]['name'] == 'check_whatsapp_permission'
+
+
+async def test_selected_shortlist_is_session_scoped_and_can_be_cleared(tools):
+    agent, model = make_agent(
+        tools, call_msg(use('rank', 'rank_prospects')), say('ranked'),
+        say('other session'), call_msg(use('empty', 'rank_prospects', offset=100)), say('none'), say('followup'))
+    await agent.reply('s', 'rank')
+    await agent.reply('other', 'hello')
+    assert 'Selected shortlist' not in model.calls[-1]['messages'][0].content
+    await agent.reply('s', 'show the next page beyond the results')
+    await agent.reply('s', 'what about those?')
+    assert 'Selected shortlist' not in model.calls[-1]['messages'][0].content

@@ -61,6 +61,8 @@ The LLM chooses the order and the parameters. For a single customer (*"Why isn't
 
 **The LLM never computes a number.** Every score, eligibility decision and consent check comes from `rules.py`. The LLM only chooses tools and writes prose.
 
+**Follow-up context:** the latest ranked shortlist is retained per session, so "these customers" refers to the same IDs. Historical shortlist data does not carry consent into the next turn: permission must be rechecked before follow-up drafts. History is trimmed only at complete turn boundaries; the active user request and its tool exchange are always kept.
+
 **Consent guard:** the agent-local `save_whatsapp_drafts` tool only accepts a draft for a customer whose WhatsApp permission a tool confirmed *in the same turn*. Anything else is rejected.
 
 ## Prerequisites

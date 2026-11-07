@@ -30,11 +30,17 @@ MAX_TOOL_ROUNDS = 8
 # A ContextVar (not graph config) so the callable never reaches the checkpointer.
 ToolHook = Callable[[str, dict, str, bool], Awaitable[None]]
 _on_tool: contextvars.ContextVar[ToolHook | None] = contextvars.ContextVar('on_tool', default=None)
-MAX_HISTORY = 20
+MAX_HISTORY_MESSAGES = 40
 LIMIT_TEXT = 'I could not finish within the tool-call limit. Please narrow the request.'
 REFUSAL_TEXT = 'I cannot help with that request.'
 
 SYSTEM_PROMPT = """You are a banking relationship-manager (RM) assistant for personal-loan outreach.
+For a prospect campaign, call rank_prospects with the requested limit (default 5) and
+high_value_only=true when requested. Its rows already include product fit, timing, personalisation
+and WhatsApp permission: do not repeat individual lookups unless information is missing or requested.
+Use those returned rows to save drafts immediately when requested, then summarize the result.
+For follow-ups about "these" or "the same" customers, use the selected shortlist in context; do not
+replace it with a new search. Recheck WhatsApp permission in this turn before saving follow-up drafts.
 Use the provided tools for every fact about customers, eligibility, scores and consent; never invent
 customer data. Customer income, balance, credit score and EMI-to-income ratio are only available as
 bands (e.g. "INR 80K-1.2L", "750-799", "15-30%"); never estimate, narrow down or guess an exact figure.
@@ -78,6 +84,23 @@ class AgentUnavailable(RuntimeError):
     def __init__(self, message: str, status_code: int = 503):
         super().__init__(message)
         self.status_code = status_code
+
+
+def _conversation_window(messages: list) -> list:
+    """Keep complete turns, always including the entire active tool exchange.
+
+    Trimming individual messages with start_on='human' can discard the active request
+    altogether when a single turn contains more than the history budget.
+    """
+    starts = [i for i, message in enumerate(messages) if message.type == 'human']
+    if not starts:
+        return messages
+    start = starts[-1]
+    for previous in reversed(starts[:-1]):
+        if len(messages) - previous > MAX_HISTORY_MESSAGES:
+            break
+        start = previous
+    return messages[start:]
 
 
 def _initials(name: str) -> str:
@@ -205,12 +228,13 @@ class GraphChatAgent:
         return self._graph
 
     def _build(self, model, tools: dict):
-        from langchain_core.messages import AIMessage, ToolMessage, trim_messages
+        from langchain_core.messages import AIMessage, ToolMessage
         from langgraph.checkpoint.memory import InMemorySaver
         from langgraph.graph import END, START, MessagesState, StateGraph
 
         class State(MessagesState):
             prospects: list | None
+            selected_prospects: list
             permitted: list
             drafts: dict
             trace: list
@@ -222,10 +246,14 @@ class GraphChatAgent:
             'parameters': DRAFT_TOOL['input_schema']}])
 
         async def agent(state: State):
-            window = trim_messages(state['messages'], strategy='last', token_counter=len,
-                                   max_tokens=MAX_HISTORY * 2, start_on='human', include_system=False)
+            window = _conversation_window(state['messages'])
+            context = SYSTEM_PROMPT
+            if selected := state.get('selected_prospects'):
+                context += ('\nSelected shortlist from the latest ranking (historical tool data; '
+                            'does not confirm WhatsApp permission for this turn):\n'
+                            + json.dumps(selected, default=str))
             try:
-                reply = await bound.ainvoke([('system', SYSTEM_PROMPT), *window])
+                reply = await bound.ainvoke([('system', context), *window])
             except Exception as exc:
                 raise (_unavailable(exc) or exc) from exc
             meta = reply.response_metadata or {}
@@ -238,6 +266,7 @@ class GraphChatAgent:
         async def run_tools(state: State):
             trace, permitted = list(state['trace']), set(state['permitted'])
             prospects, drafts = state['prospects'], dict(state['drafts'])
+            selected = state.get('selected_prospects', [])
             out = []
             for call in state['messages'][-1].tool_calls:
                 name = call['name']
@@ -262,6 +291,7 @@ class GraphChatAgent:
                     data = (getattr(msg, 'artifact', None) or {}).get('structured_content') or {}
                     if not error and name == 'rank_prospects':
                         prospects = data.get('prospects', [])
+                        selected = prospects
                         permitted |= {p['customer_id'] for p in prospects if p['whatsapp_contact_permitted']}
                     elif not error and name == 'check_whatsapp_permission' and data.get('whatsapp_contact_permitted'):
                         permitted.add(data['customer_id'])
@@ -276,7 +306,7 @@ class GraphChatAgent:
                     except Exception:  # a UI problem must never break the agent turn
                         log.exception('on_tool hook failed')
             return {'messages': out, 'trace': trace, 'permitted': sorted(permitted),
-                    'prospects': prospects, 'drafts': drafts}
+                    'prospects': prospects, 'selected_prospects': selected, 'drafts': drafts}
 
         async def limit(state: State):
             # Answer the dangling tool calls so the persisted thread stays a valid conversation.
@@ -311,7 +341,8 @@ class GraphChatAgent:
             text += '\n\n(Response was cut off.)'
         result = None
         if final['prospects'] is not None or final['drafts']:
-            customers = [_ui_customer(p) for p in final['prospects'] or []]
+            rows = final['prospects'] if final['prospects'] is not None else final.get('selected_prospects', [])
+            customers = [_ui_customer(p) for p in rows]
             names = {c['id']: c['name'] for c in customers}
             result = {'type': 'prospects', 'customers': customers, 'total': len(customers), 'mode': 'live',
                       'messages': [{'customerId': int(cid), 'customerName': names.get(int(cid), f'Customer {cid}'),
