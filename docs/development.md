@@ -52,7 +52,7 @@ pytest -q
 | `tests/test_guardrails.py` | Draft content rules, password hashing and login, rate limiter, audit log |
 | `tests/test_chainlit_app.py` | Prospect table shaping and the login callback (including its audit records) |
 
-The tests use a fake repository and a fake chat model, so they need **no database, network or API key**. They do **not** cover live PostgreSQL, live LLM calls (OpenAI, Anthropic, Ollama), or the Chainlit UI itself, so click through the app after changes to those.
+The tests use a fake repository and a fake chat model, so they need **no database, network or API key**. They do **not** cover live PostgreSQL, live LLM calls (OpenAI, Ollama), or the Chainlit UI itself, so click through the app after changes to those.
 
 ## Extending the app
 

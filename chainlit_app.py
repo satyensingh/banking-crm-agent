@@ -1,6 +1,6 @@
 """Chainlit UI for the banking CRM assistant.
 
-Chainlit -> LangGraph agent (app/graph_agent.py) -> OpenAI | Anthropic | Ollama
+Chainlit -> LangGraph agent (app/graph_agent.py) -> OpenAI | Ollama
                                                  -> FastMCP server over HTTP -> PostgreSQL
 
 Run:  chainlit run chainlit_app.py        (needs the MCP server: MCP_TRANSPORT=http python -m app.mcp_server)

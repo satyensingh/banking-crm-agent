@@ -143,13 +143,26 @@ async def test_refusal_and_tool_limit_keep_thread_valid(tools):
 
 async def test_missing_api_key_is_a_clean_503(monkeypatch):
     from app.graph_agent import AgentUnavailable
-    for provider, var in (('anthropic', 'ANTHROPIC_API_KEY'), ('openai', 'OPENAI_API_KEY')):
-        monkeypatch.setenv('LLM_PROVIDER', provider)
-        for v in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY'):
-            monkeypatch.delenv(v, raising=False)
-        with pytest.raises(AgentUnavailable) as e:
-            await GraphChatAgent().reply('s', 'hi')
-        assert e.value.status_code == 503 and var in str(e.value)
+    monkeypatch.setenv('LLM_PROVIDER', 'openai')
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    with pytest.raises(AgentUnavailable) as e:
+        await GraphChatAgent().reply('s', 'hi')
+    assert e.value.status_code == 503 and 'OPENAI_API_KEY' in str(e.value)
+
+
+def test_default_provider_is_openai(monkeypatch):
+    from app.graph_agent import make_chat_model
+    monkeypatch.delenv('LLM_PROVIDER', raising=False)
+    monkeypatch.setenv('OPENAI_API_KEY', 'test-key')
+    model = make_chat_model()
+    from langchain_openai import ChatOpenAI
+    assert isinstance(model, ChatOpenAI)
+
+
+def test_removed_provider_is_rejected():
+    from app.graph_agent import AgentUnavailable, make_chat_model
+    with pytest.raises(AgentUnavailable, match="use 'openai' or 'ollama'"):
+        make_chat_model('anthropic')
 
 
 async def test_on_tool_hook_reports_each_call_and_survives_hook_errors(tools):

@@ -19,7 +19,7 @@ flowchart TB
         UI --> AUDIT
         AG -.->|"Tool results shown as steps"| UI
     end
-    LLM["Configured model provider<br/>OpenAI, Anthropic or local Ollama<br/>Tool selection and prose"]
+    LLM["Configured model provider<br/>OpenAI or local Ollama<br/>Tool selection and prose"]
     subgraph TOOLS["FastMCP service - port 8001"]
         MCP["Eight typed, read-only MCP tools<br/>Input validation and structured errors"]
         SVC["CRMTools service<br/>Compose ranking and customer lookups"]

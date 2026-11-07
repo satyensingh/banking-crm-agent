@@ -1,4 +1,4 @@
-"""LangGraph chat agent. An LLM (Anthropic or OpenAI) drives the CRM tools, which are reached through an
+"""LangGraph chat agent. An LLM (OpenAI or Ollama) drives the CRM tools, which are reached through an
 MCP *client* (langchain-mcp-adapters) talking to the MCP server over streamable HTTP.
 
 `await reply(session_id, message) -> {text, tools, result}` where `result` is the UI prospect/draft shape.
@@ -23,7 +23,7 @@ from .guardrails import check_draft
 log = logging.getLogger('banking_crm.graph_agent')
 
 DEFAULT_MCP_URL = 'http://127.0.0.1:8001/mcp'
-DEFAULT_MODELS = {'anthropic': 'claude-sonnet-5-5', 'openai': 'gpt-5', 'ollama': 'qwen3:8b'}
+DEFAULT_MODELS = {'openai': 'gpt-5', 'ollama': 'qwen3:8b'}
 MAX_TOOL_ROUNDS = 8
 
 # Optional per-request UI hook: `async (name, args, output, is_error) -> None`, awaited after every tool call.
@@ -160,7 +160,7 @@ def _unavailable(exc: Exception) -> AgentUnavailable | None:
         return AgentUnavailable('The AI model server is unreachable', 502)
     if type(exc).__module__.split('.')[0] == 'ollama' and getattr(exc, 'status_code', None) == 404:
         return AgentUnavailable('The Ollama model is not installed (run `ollama pull <model>`)', 503)
-    if type(exc).__module__.split('.')[0] not in ('anthropic', 'openai', 'ollama'):
+    if type(exc).__module__.split('.')[0] not in ('openai', 'ollama'):
         return None
     kind = type(exc).__name__
     if kind == 'RateLimitError':
@@ -172,12 +172,7 @@ def _unavailable(exc: Exception) -> AgentUnavailable | None:
 
 
 def make_chat_model(provider: str | None = None):
-    provider = (provider or os.getenv('LLM_PROVIDER', 'anthropic')).strip().lower()
-    if provider == 'anthropic':
-        if not (os.getenv('ANTHROPIC_API_KEY') or os.getenv('ANTHROPIC_AUTH_TOKEN')):
-            raise AgentUnavailable('ANTHROPIC_API_KEY is not configured for the backend')
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=os.getenv('CLAUDE_MODEL', DEFAULT_MODELS['anthropic']), max_tokens=16000)
+    provider = (provider or os.getenv('LLM_PROVIDER', 'openai')).strip().lower()
     if provider == 'openai':
         if not os.getenv('OPENAI_API_KEY'):
             raise AgentUnavailable('OPENAI_API_KEY is not configured for the backend')
@@ -196,7 +191,7 @@ def make_chat_model(provider: str | None = None):
             # Explicit (never None): None leaves Qwen3's <think> text inline in the reply shown to the RM.
             # True = think (better tool use, slower); the thinking is kept out of the message content.
             reasoning=os.getenv('OLLAMA_REASONING', 'false').strip().lower() in ('1', 'true', 'yes'))
-    raise AgentUnavailable(f"Unsupported LLM_PROVIDER '{provider}' (use 'anthropic', 'openai' or 'ollama')")
+    raise AgentUnavailable(f"Unsupported LLM_PROVIDER '{provider}' (use 'openai' or 'ollama')")
 
 
 class GraphChatAgent:

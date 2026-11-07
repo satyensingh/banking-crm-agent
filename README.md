@@ -5,7 +5,7 @@ An AI assistant for banking **relationship managers (RMs)**. The RM asks for per
 > **Nothing is ever sent to customers.** Drafts are for RM review only.
 > Scores are heuristics, **not** conversion probabilities. Product matches are preliminary suitability, **not** credit decisions or offers. All customer data is synthetic.
 
-**Stack:** Chainlit (UI) · LangGraph (agent) · OpenAI / Anthropic / Ollama (LLM) · FastMCP (tool server) · PostgreSQL (data)
+**Stack:** Chainlit (UI) · LangGraph (agent) · OpenAI / Ollama (LLM) · FastMCP (tool server) · PostgreSQL (data)
 
 ## Setup contents
 
@@ -26,7 +26,7 @@ For architecture, execution flow, tool design, business rules and trade-offs, se
 | Need | Why |
 |---|---|
 | **Docker** with Compose v2 | Runs the whole stack ([install](https://docs.docker.com/get-docker/)) |
-| **One LLM option** | An [OpenAI](https://platform.openai.com/api-keys) key, an [Anthropic](https://console.anthropic.com/) key, **or** [Ollama](https://ollama.com) (free, local) |
+| **One LLM option** | An [OpenAI](https://platform.openai.com/api-keys) key **or** [Ollama](https://ollama.com) (free, local) |
 | Python **3.12** *(only for [local development](#local-development-without-docker))* | The Docker image uses 3.12. Avoid 3.14: Chainlit's websocket layer fails on it |
 | ~6 GB free disk *(only for Ollama)* | The `qwen3:8b` model is about 5 GB |
 
@@ -46,7 +46,7 @@ LLM_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 ```
 
-(For Anthropic or free local Ollama, see [Choosing an LLM provider](#choosing-an-llm-provider).)
+(For OpenAI or free local Ollama, see [Choosing an LLM provider](#choosing-an-llm-provider).)
 
 **Sign-in works out of the box.** `.env.example` includes a dev-only session secret and a demo login, so there's nothing else to set up:
 
@@ -87,10 +87,9 @@ Set `LLM_PROVIDER` in `.env`, then restart the chat service: `docker compose up 
 | Provider | `.env` settings | Cost | Notes |
 |---|---|---|---|
 | **OpenAI** | `LLM_PROVIDER=openai`<br/>`OPENAI_API_KEY=...` | Paid | Default model `gpt-5` (`OPENAI_MODEL`). Uses the Responses API. `OPENAI_BASE_URL` can point at an OpenAI-compatible gateway. |
-| **Anthropic** | `LLM_PROVIDER=anthropic`<br/>`ANTHROPIC_API_KEY=...` | Paid | Default model `claude-sonnet-5-5` (`CLAUDE_MODEL`). |
 | **Ollama** | `LLM_PROVIDER=ollama` | **Free**, runs locally | Default model `qwen3:8b` (`OLLAMA_MODEL`). No API key, and customer data never leaves your machine. |
 
-> If `LLM_PROVIDER` is unset, the code defaults to `anthropic`. `.env.example` ships with `openai`.
+> If `LLM_PROVIDER` is unset, the code defaults to `openai`. `.env.example` ships with `openai`.
 
 ### Using Ollama (free, local)
 
@@ -107,7 +106,7 @@ docker compose up -d chainlit
 ```
 
 - **Docker reaching Ollama:** the container connects to your machine's Ollama at `http://host.docker.internal:11434` (already set in `docker-compose.yml`). If Ollama listens only on localhost and the container can't connect, start it with `OLLAMA_HOST=0.0.0.0 ollama serve`.
-- **Quality:** an 8B model calls tools less reliably than Claude or GPT. Set `OLLAMA_REASONING=true` to make Qwen3 think before acting (better tool use, slower), or try a larger model via `OLLAMA_MODEL`. The consent guard still blocks any draft for a customer whose permission wasn't confirmed, whatever the model does.
+- **Quality:** an 8B model calls tools less reliably than the hosted OpenAI model. Set `OLLAMA_REASONING=true` to make Qwen3 think before acting (better tool use, slower), or try a larger model via `OLLAMA_MODEL`. The consent guard still blocks any draft for a customer whose permission wasn't confirmed, whatever the model does.
 - **Context window:** `OLLAMA_NUM_CTX` defaults to 8192 because Ollama's 4k default is too small for the tool schemas plus the system prompt.
 - **Status:** the Ollama path is covered by tests with a fake model, but has not been run against a live Qwen3 here. Try a few prompts and expect to tune `OLLAMA_REASONING` or the model.
 
@@ -117,9 +116,7 @@ All variables live in [.env.example](.env.example). Docker Compose reads `.env` 
 
 | Variable | Used by | Default | Description |
 |---|---|---|---|
-| `LLM_PROVIDER` | chainlit | `anthropic` (code) | `anthropic`, `openai` or `ollama` |
-| `ANTHROPIC_API_KEY` | chainlit | – | Required for `anthropic` |
-| `CLAUDE_MODEL` | chainlit | `claude-sonnet-5-5` | Anthropic model |
+| `LLM_PROVIDER` | chainlit | `openai` | `openai` or `ollama` |
 | `OPENAI_API_KEY` | chainlit | – | Required for `openai` |
 | `OPENAI_MODEL` | chainlit | `gpt-5` | OpenAI model |
 | `OPENAI_BASE_URL` | chainlit | OpenAI | OpenAI-compatible gateway or proxy |
@@ -215,7 +212,7 @@ Tests need no database, network or API key. See [test coverage and extension gui
 | *"You are sending messages too quickly"* | The per-RM rate limit. Wait, or raise `CHAT_RATE_LIMIT_PER_MIN`. |
 | *"Your message is too long"* | Over `CHAT_MAX_MESSAGE_CHARS`. Shorten it, or raise the limit. |
 | Drafts keep getting rejected | The content rules caught something. The tool step for `save_whatsapp_drafts` shows the exact reasons. If a rule is too strict for your wording, adjust it in `app/guardrails.py`. |
-| Chat shows *"OPENAI_API_KEY is not configured"* (or the Anthropic equivalent) | The key is missing in `.env`, or `LLM_PROVIDER` points at the wrong provider. Fix `.env`, then `docker compose up -d chainlit`. |
+| Chat shows *"OPENAI_API_KEY is not configured"* | The key is missing in `.env`, or `LLM_PROVIDER` points at the wrong provider. Fix `.env`, then `docker compose up -d chainlit`. |
 | Chat shows *"The CRM tool server is unreachable"* | The MCP server isn't running or `MCP_SERVER_URL` is wrong. Check `docker compose ps` and `docker compose logs mcp`. Outside Docker, start it with `MCP_TRANSPORT=http`. |
 | Chat shows *"The AI model server is unreachable"* | With Ollama: it isn't running, or the container can't reach it. Check `curl http://localhost:11434`. See [Using Ollama](#using-ollama-free-local). |
 | Chat shows *"The Ollama model is not installed"* | Run `ollama pull qwen3:8b`, or set `OLLAMA_MODEL` to a model you have. |

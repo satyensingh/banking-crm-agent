@@ -15,7 +15,7 @@
 | **Consent gate and content rules in code** | A draft is only accepted for a customer whose WhatsApp permission a tool confirmed this turn, and it must pass `check_draft`. Rejections go back to the model with reasons, so it rewrites. | Trusting the prompt: models drift, and compliance can't rely on that. |
 | **Personalise without revealing monitoring** | Drafts use name, city, occupation, tenure, product and a neutral theme ("if you have education plans coming up"). A message that says "we noticed your tuition payment" feels like surveillance, so the content rules reject it. Health is never used. | Quoting the transaction: more specific, but intrusive and a compliance risk. |
 | **Security for a banking context** | RM login (PBKDF2 hashes), per-RM rate limit, message cap and an audit log of every turn. An assistant over customer data must know who asked what. | No auth: fine for a demo, but not credible for a bank. |
-| **Pluggable LLM provider** | OpenAI and Anthropic for quality. Ollama runs locally for free, and keeps customer data on the machine. One `make_chat_model()` switch. | A single provider: less code, but locks in cost and data residency. |
+| **Pluggable LLM provider** | OpenAI provides the hosted model option. Ollama runs locally for free, and keeps customer data on the machine. One `make_chat_model()` switch. | A single provider: less code, but locks in cost and data residency. |
 | **Human in the loop** | Drafts are recorded for RM review and never sent. There is no sending integration. | Auto-send: not acceptable for regulated outreach. |
 
 ## Trade-offs and limitations
