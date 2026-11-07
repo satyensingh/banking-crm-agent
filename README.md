@@ -7,63 +7,19 @@ An AI assistant for banking **relationship managers (RMs)**. The RM asks for per
 
 **Stack:** Chainlit (UI) · LangGraph (agent) · OpenAI / Anthropic / Ollama (LLM) · FastMCP (tool server) · PostgreSQL (data)
 
-## Contents
+## Setup contents
 
-- [How it works](#how-it-works)
 - [Prerequisites](#prerequisites)
 - [Quick start (Docker)](#quick-start-docker)
 - [Choosing an LLM provider](#choosing-an-llm-provider)
-- [Using the app](#using-the-app)
 - [Configuration reference](#configuration-reference)
 - [Local development (without Docker)](#local-development-without-docker)
-- [Project structure](#project-structure)
-- [Data and business rules](#data-and-business-rules)
-- [Guardrails](#guardrails)
-- [Tools and the MCP server](#tools-and-the-mcp-server)
-- [Testing](#testing)
-- [Extending the app](#extending-the-app)
+- [Replacing the dev logins](#replacing-the-dev-logins)
+- [Run tests](#run-tests)
 - [Troubleshooting](#troubleshooting)
-- [Key design decisions](#key-design-decisions)
-- [Trade-offs and limitations](#trade-offs-and-limitations)
+- [Documentation and diagrams](#documentation-and-diagrams)
 
-## How it works
-
-```mermaid
-flowchart LR
-    RM([Relationship manager]) --> UI["Chainlit UI<br/>chainlit_app.py :8000"]
-    UI -->|in-process call| AG["LangGraph agent<br/>app/graph_agent.py"]
-    AG -->|chat + tool calls| LLM{{"LLM<br/>OpenAI | Anthropic | Ollama"}}
-    AG -->|"MCP client (streamable HTTP)"| MCP["FastMCP server<br/>app/mcp_server.py :8001"]
-    MCP --> SVC["CRMTools + rules.py<br/>deterministic business rules"]
-    SVC -->|read-only SQL| DB[("PostgreSQL :5432<br/>schema banking_crm_demo")]
-```
-
-### Execution flow (one chat turn)
-
-1. The RM sends a message in Chainlit. Chainlit calls `GraphChatAgent.reply()` in-process.
-2. The LangGraph loop (`agent → tools → agent …`, at most 8 rounds) asks the LLM what to do.
-3. When the LLM requests a tool, the agent calls it on the **FastMCP server** over HTTP. The server runs the rule in `rules.py` against PostgreSQL in a read-only transaction.
-4. Each tool call appears in the UI as a step. When the LLM stops calling tools, its answer is shown with a prospect table (plus CSV download) and any WhatsApp drafts.
-
-### How the agent breaks down the main request
-
-*"Find high-value customers likely to convert for a personal loan this month and generate personalized WhatsApp messages"* typically runs as:
-
-| Step | Tool | What it decides |
-|---|---|---|
-| 1. Retrieve and rank | `rank_prospects(high_value_only=true)` | Loads customer features and the last 6 months of **transactions**, drops anyone with an eligibility blocker or no WhatsApp permission, scores the rest, and suggests a product. |
-| 2. Why this month | (in the ranking) or `get_transaction_insights` | Recent life-event spends and income or spending trends become the score's **timing** points and each prospect's `timing_signals`. |
-| 3. Product fit | (in the ranking) or `match_products` | The suitable personal-loan product, premium first. |
-| 4. Personalise and draft | `save_whatsapp_drafts` (agent-local) | The LLM writes one draft per customer from their name, city, occupation, tenure, product and an `outreach_theme`. The consent gate and content rules run, and rejected drafts come back with reasons for a rewrite. |
-| 5. Answer | – | A short summary. The UI adds the prospect table, the *This month* column and the drafts. |
-
-The LLM chooses the order and the parameters. For a single customer (*"Why isn't customer 12 eligible?"*) it calls `score_conversion` or `get_transaction_insights` directly instead.
-
-**The LLM never computes a number.** Every score, eligibility decision and consent check comes from `rules.py`. The LLM only chooses tools and writes prose.
-
-**Follow-up context:** the latest ranked shortlist is retained per session, so "these customers" refers to the same IDs. Historical shortlist data does not carry consent into the next turn: permission must be rechecked before follow-up drafts. History is trimmed only at complete turn boundaries; the active user request and its tool exchange are always kept.
-
-**Consent guard:** the agent-local `save_whatsapp_drafts` tool only accepts a draft for a customer whose WhatsApp permission a tool confirmed *in the same turn*. Anything else is rejected.
+For architecture, execution flow, tool design, business rules and trade-offs, see the [documentation index](docs/README.md). For example prompts and UI behavior, see [Using the app](docs/usage.md).
 
 ## Prerequisites
 
@@ -77,7 +33,7 @@ The LLM chooses the order and the parameters. For a single customer (*"Why isn't
 ## Quick start (Docker)
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/satyensingh/banking-crm-agent.git
 cd banking-crm-agent
 
 cp .env.example .env
@@ -119,7 +75,7 @@ The first build takes a few minutes. PostgreSQL seeds itself with 150 synthetic 
 docker compose ps                 # postgres (healthy), mcp and chainlit should be "Up"
 docker compose logs -f chainlit   # follow the chat service logs
 docker compose down               # stop (keeps the database)
-docker compose down -v            # stop AND delete the database volume (re-seeds on next start)
+docker compose down -v            # stop AND delete database and audit volumes (re-seeds next start)
 ```
 
 The seed script only runs when the Postgres volume is empty, so use `down -v` if you want fresh data.
@@ -154,30 +110,6 @@ docker compose up -d chainlit
 - **Quality:** an 8B model calls tools less reliably than Claude or GPT. Set `OLLAMA_REASONING=true` to make Qwen3 think before acting (better tool use, slower), or try a larger model via `OLLAMA_MODEL`. The consent guard still blocks any draft for a customer whose permission wasn't confirmed, whatever the model does.
 - **Context window:** `OLLAMA_NUM_CTX` defaults to 8192 because Ollama's 4k default is too small for the tool schemas plus the system prompt.
 - **Status:** the Ollama path is covered by tests with a fake model, but has not been run against a live Qwen3 here. Try a few prompts and expect to tune `OLLAMA_REASONING` or the model.
-
-## Using the app
-
-### What you can ask
-
-Click a starter on the welcome screen, or type your own request:
-
-| Try | What happens |
-|---|---|
-| *Find the top 5 high-value customers likely to convert for a personal loan this month.* | Ranks prospects and shows a table |
-| *Find the top 3 personal loan prospects and generate personalized WhatsApp messages.* | Ranks, checks consent, then writes drafts |
-| *Show premium personal loan prospects with the highest conversion scores.* | Filters to the premium product |
-| *Explain why customers could be excluded or ineligible for a personal loan.* | Explains the eligibility blockers |
-| *Why isn't customer 12 eligible?* · *Score customer 42.* · *Which products suit customer 7?* | Single-customer questions |
-| *Why is this a good month to contact customer 77?* · *How have customer 25's finances changed recently?* | Transaction insights: trends, life events, timing signals |
-| *Show prospects in Pune with income above 80,000.* | Filtered search (city, income, credit score, balance, occupation) |
-
-### What you see
-
-- **Tool steps:** each tool call shows as a collapsible step with its input and output, so you can see exactly where an answer came from.
-- **Prospect table:** score, income band, credit score band, balance band, suggested product, *This month* (the timing signals), the reason, and whether WhatsApp is permitted. A **CSV file** of the table is attached.
-- **Draft button:** *Draft WhatsApp messages for these prospects* asks the agent to write drafts for the prospects shown.
-- **WhatsApp drafts:** shown in copyable blocks, labelled **not sent**. Only customers with confirmed WhatsApp permission get a draft.
-- **Errors** appear as a message in the chat, for example a missing API key, a rate limit, or an unreachable model or tool server.
 
 ## Configuration reference
 
@@ -245,83 +177,7 @@ chainlit run chainlit_app.py -w     # http://localhost:8000, reloads on change
 
 `MCP_SERVER_URL` defaults to `http://127.0.0.1:8001/mcp`, which is the server from step 3. The audit log goes to `backend/logs/audit.jsonl`.
 
-## Project structure
-
-```text
-.
-├── docker-compose.yml            # postgres, mcp, chainlit
-├── .env.example                  # every setting, documented
-├── scripts/
-│   └── banking_crm_seed_database.sql   # schema + 150 synthetic customers, loaded on first DB start
-├── diagrams/database_diagram.md  # ER diagram
-└── backend/
-    ├── chainlit_app.py           # Chainlit UI: starters, live tool steps, table + CSV, drafts
-    ├── chainlit.md               # welcome screen text
-    ├── .chainlit/config.toml     # Chainlit settings (app name, tool-step display)
-    ├── Dockerfile                # one image for both the mcp and chainlit services
-    ├── requirements.txt          # runtime deps    ·  requirements-dev.txt adds test deps
-    ├── app/
-    │   ├── graph_agent.py        # LangGraph agent, LLM providers, MCP client, consent guard
-    │   ├── guardrails.py         # draft content rules, RM password auth, rate limit, message cap
-    │   ├── audit.py              # append-only JSON Lines audit log
-    │   ├── mcp_server.py         # FastMCP server: 8 read-only tools, validation, structured errors
-    │   ├── service.py            # CRMTools: repository + rules
-    │   ├── rules.py              # pure business rules (classification, transaction insights, scoring, products, consent)
-    │   ├── repository.py         # parameterised, read-only SQL
-    │   ├── bands.py              # income/balance/credit/ratio bands: no exact figures leave the service
-    │   ├── models.py             # Pydantic request/response models
-    │   └── deps.py               # wiring for the repository and tools
-    └── tests/                    # pytest suites (no DB, network or API key needed)
-```
-
-## Data and business rules
-
-The database is the `banking_crm_demo` schema: `customers`, `accounts`, `transactions`, `products`, `customer_products`, `outreach_history`, `loan_applications` (see [diagrams/database_diagram.md](diagrams/database_diagram.md)). The seed contains **150 fictional customers** with deliberate edge cases: no WhatsApp opt-in, do-not-contact, weak KYC, low credit score, high risk, open applications, existing personal loans and recent declines.
-
-**Transactions** cover the last 6 complete months: monthly income, rent, shopping and utilities. Some customers have rising or falling income, rising discretionary spend, or a one-off life-event spend (education, home improvement, travel, wedding, medical) in the last two months. All patterns are deterministic by customer ID, and dates are relative to the day the database is seeded.
-
-**Products:** `PL_STANDARD` (personal loan), `PL_PREMIUM` (personal loan, needs income ≥ ₹80k and credit ≥ 750), `CC_REWARDS` (credit card), `AUTO_LOAN`.
-
-**High-value** (an illustrative segmentation rule): monthly income ≥ ₹80,000 **and** balance ≥ ₹100,000.
-
-**Propensity score (0–100, a heuristic)** is the sum of these parts:
-
-| Part | Max | Scale |
-|---|---|---|
-| Income | 20 | ≥120k: 20 · ≥80k: 16 · ≥50k: 10 · else 4 |
-| Credit score | 20 | ≥800: 20 · ≥750: 16 · ≥700: 10 · else 4 |
-| Balance | 15 | ≥200k: 15 · ≥100k: 11 · ≥50k: 7 · else 2 |
-| Existing EMI / income | 15 | <15%: 15 · <30%: 10 · else 3 |
-| Past personal-loan interest | 10 | yes: 10 |
-| No personal-loan contact in 30 days | 5 | yes: 5 |
-| **Timing ("this month")** | 15 | life-event spend in the last 2 months: 8 · income up: 4 · discretionary spend up: 3 |
-
-**Transaction insights** (`transaction_insights` in `rules.py`) compare the latest 3 complete months with the 3 before. Income is *rising* or *falling* at ±5%, and discretionary (shopping) spend at ±15%. The result adds a surplus band ((income − debits) / income) and recent life events, each sized against monthly income (for example *1–2x monthly income*). Falling income and a surplus below 10% are reported as **caution** signals and earn no points. Only trends and bands leave the service, never amounts.
-
-**Health spending is ignored.** Medical transactions are excluded from insights, scoring and outreach themes, because targeting credit at someone's health event is not acceptable. The seed includes medical spends to show this.
-
-**Eligibility blockers** (any one makes a customer not eligible): KYC not verified · high risk band · credit score < 680 · income < ₹30,000 · account not active · fewer than 5 months of income history · EMI/income > 40% · active personal loan · pending personal-loan application · personal-loan decline in the last 90 days.
-
-**WhatsApp permission** is stricter than eligibility. A customer is contactable only if they have **no eligibility blockers**, **and** have opted in to WhatsApp, **and** are not on the do-not-contact list, **and** have had no personal-loan contact in the last 30 days. Any failure is returned as a named blocker.
-
-Eligibility and the base factors follow the seed script's `personal_loan_prospects` view, which is kept as the dataset's reference ranking. The app's weights are rescaled to make room for timing, which the view doesn't have. `rules.py` is where to change them.
-
-## Guardrails
-
-Every guardrail is deterministic code, not an LLM judgement, so it behaves the same every time and is unit-tested.
-
-| Guardrail | Where | What it does |
-|---|---|---|
-| **RM login** | `chainlit_app.py`, `app/guardrails.py` | Password sign-in is required for the chat. Passwords are stored only as salted PBKDF2-SHA256 hashes (600k iterations) in `RM_USERS`. Unknown usernames take as long to reject as wrong passwords, so timing doesn't reveal valid usernames. Unauthenticated websocket connections are refused. |
-| **Consent gate on drafts** | `app/graph_agent.py` | A draft is accepted only for a customer whose WhatsApp permission a tool confirmed in the same turn. |
-| **Draft content rules** | `app/guardrails.py` (`check_draft`) | A draft is rejected if it promises or implies approval ("guaranteed", "pre-approved", "approved", "assured", "instant approval", "risk-free"), states a rate, ₹ amount, lakh/crore figure or EMI, **reveals that the bank looked at the customer's transactions** ("we noticed", "your recent spending", "spent on"), **mentions health or medical matters**, contains a link, email or phone number, or is over 600 characters. The model gets the reasons back and rewrites. |
-| **Message cap** | `chainlit_app.py` | Messages over `CHAT_MAX_MESSAGE_CHARS` (default 4000) are refused before reaching the LLM. |
-| **Rate limit** | `chainlit_app.py`, `app/guardrails.py` | Each RM may send `CHAT_RATE_LIMIT_PER_MIN` messages per minute (default 10, sliding window), to limit runaway API cost. |
-| **Audit log** | `app/audit.py` | Every sign-in (success and failure), blocked message, failed turn and completed turn is appended as one JSON line: time, RM, session, prompt, reply, tools with arguments, prospect IDs and saved drafts. Passwords are never logged. |
-| **Read-only data access** | `app/mcp_server.py`, `app/repository.py` | Tools are marked read-only and run in `READ ONLY` transactions. Search and profile tools return a fixed allow-list of fields. |
-| **Bounded runs** | `app/graph_agent.py` | At most 8 tool rounds per turn, at most 100 rows per tool call, and model output capped at 16k tokens. |
-
-### Replacing the dev logins
+## Replacing the dev logins
 
 Do this before the app is reachable by anyone but you. It needs the backend Python environment (see [Local development](#local-development-without-docker)), or run the same commands in the container with `docker compose run --rm --no-deps chainlit <command>`.
 
@@ -339,73 +195,16 @@ RM_USERS=asha=pbkdf2_sha256:600000:...,ravi=pbkdf2_sha256:600000:...
 
 The `SECURITY` warnings in `docker compose logs chainlit` disappear once both defaults are replaced. Changing the secret signs everyone out.
 
-**Reading the audit log:**
+## Run tests
 
-```bash
-docker compose exec chainlit tail -n 20 /app/logs/audit.jsonl
-docker compose exec chainlit sh -c "grep '\"event\": \"login\"' /app/logs/audit.jsonl"   # sign-ins
-```
-
-The audit log contains customer names and draft text, so it is created owner-read/write only (`0600`) and is git-ignored. It lives in the `audit_logs` Docker volume, and `docker compose down -v` deletes it. Rotate and retain it according to your bank's policy. There is no rotation built in.
-
-**Changing the rules:** edit `_DRAFT_RULES` or `DRAFT_MAX_CHARS` in `app/guardrails.py` and add a case to `tests/test_guardrails.py`. Keep the matching instructions in `SYSTEM_PROMPT` in `app/graph_agent.py` in step, so the model usually passes first time.
-
-**Not covered:** these rules catch known wording patterns, not every non-compliant phrasing. An RM still reviews every draft. There's no check that numbers in the final answer match tool outputs, no prompt-injection classifier, and no auth on the MCP endpoint (it's bound to `127.0.0.1` on the host, but other containers on the Docker network can reach it).
-
-## Tools and the MCP server
-
-The eight CRM capabilities are **MCP tools** served by the FastMCP server, which the agent reaches over HTTP. Each tool does one job, so the LLM decomposes a request by choosing tools. Each has a typed input schema, a typed output, and a docstring the LLM reads to decide when to call it.
-
-| MCP tool | What it does |
-|---|---|
-| `search_customers` | Filter by city, income, credit score, balance, occupation (paginated) |
-| `get_customer_profile` | Minimised profile (no contact or consent fields) |
-| `get_transaction_insights` | Last 6 months of transactions as trends and bands: income and spending trends, surplus band, recent life events, timing signals, outreach themes |
-| `classify_high_value` | High-value segmentation |
-| `score_conversion` | Explainable 0–100 score with a per-factor breakdown (including timing) and blockers |
-| `match_products` | Preliminary suitability, optional `product_code` |
-| `check_whatsapp_permission` | Eligibility, opt-in, do-not-contact, 30-day cooldown |
-| `rank_prospects` | Eligible, (by default) contactable prospects, ranked, with suggested product, occupation, tenure, timing signals and outreach themes. Transactions for all candidates are fetched in one query |
-
-The agent adds one local tool, `save_whatsapp_drafts`, because it enforces the consent gate against what other tools confirmed earlier in the same turn.
-
-All tools are read-only (`readOnlyHint`), and queries run in `READ ONLY` transactions. Search and profile tools return a fixed allow-list of fields, so there is no phone, email or consent data.
-
-**Errors** from MCP tools are JSON in the error message: `{"code": "NOT_FOUND" | "DATABASE_UNAVAILABLE" | "INVALID_INPUT" | "INTERNAL_ERROR", "message": "...", "retryable": bool}`. Unexpected exceptions are masked, and details go only to the server logs.
-
-## Testing
+After installing the development dependencies using the local setup above:
 
 ```bash
 cd backend && source .venv/bin/activate
 pytest -q
 ```
 
-| Suite | Covers |
-|---|---|
-| `tests/test_rules.py` | Business rules, eligibility blockers, transaction insights (trends, life events, caution signals, medical exclusion, time window) |
-| `tests/fakes.py` | Shared in-memory repository used by the other suites (not a test file) |
-| `tests/test_mcp_server.py` | MCP protocol through an in-memory client: schemas, validation, structured errors, masking, one transaction query per ranking |
-| `tests/test_graph_agent.py` | LangGraph agent with a scripted fake model and the real MCP server: tool flow, consent guard, memory, round limit, providers, error mapping |
-| `tests/test_guardrails.py` | Draft content rules, password hashing and login, rate limiter, audit log |
-| `tests/test_chainlit_app.py` | Prospect table shaping and the login callback (including its audit records) |
-
-The tests use a fake repository and a fake chat model, so they need **no database, network or API key**. They do **not** cover live PostgreSQL, live LLM calls (OpenAI, Anthropic, Ollama), or the Chainlit UI itself, so click through the app after changes to those.
-
-## Extending the app
-
-**Add a tool.** The agent discovers tools from the MCP server, so a new tool needs no agent change:
-
-1. Put the rule in `app/rules.py` (pure function) and any SQL in `app/repository.py`.
-2. Expose it on `CRMTools` in `app/service.py`.
-3. Register it in `app/mcp_server.py` with the `@tool` decorator inside `build_server()`. Give it a clear docstring, because the LLM reads it to decide when to use the tool.
-4. Add tests in `tests/test_rules.py` and `tests/test_mcp_server.py`.
-5. Restart the `mcp` service: `docker compose up -d --build mcp`.
-
-If the tool's result should appear in the UI table or feed the consent check, also handle it in `run_tools` in `app/graph_agent.py`.
-
-**Change the assistant's behaviour:** edit `SYSTEM_PROMPT` in `app/graph_agent.py`.
-
-**Add an LLM provider:** add a branch to `make_chat_model()` in `app/graph_agent.py` that returns a LangChain chat model with tool-calling support, and add its package to `requirements.txt`.
+Tests need no database, network or API key. See [test coverage and extension guidance](docs/development.md#testing) for details; live providers, PostgreSQL and browser behavior require separate verification.
 
 ## Troubleshooting
 
@@ -424,7 +223,7 @@ If the tool's result should appear in the UI table or feed the consent check, al
 | Chat shows *"The Ollama model is not installed"* | Run `ollama pull qwen3:8b`, or set `OLLAMA_MODEL` to a model you have. |
 | *"rate limited"* | Your provider's rate limit. Retry shortly. |
 | Changed `.env` but nothing changed | Compose reads `.env` when containers are created: `docker compose up -d chainlit`. |
-| Wanted fresh seed data | `docker compose down -v`, then `docker compose up -d`. This deletes the database volume. |
+| Wanted fresh seed data | `docker compose down -v`, then `docker compose up -d`. This deletes the database and audit log volumes. |
 | *This month* column is empty for everyone, or tenure is missing | The database was seeded before transaction trends and life events were added, or so long ago that the 6-month window has moved past the seeded months. Reseed: `docker compose down -v && docker compose up -d`. |
 | Port already in use (8000, 8001, 5432) | Stop the other process, or change the host port in `docker-compose.yml`. |
 | `Found orphan containers` warning | A service was renamed or removed. Clean up with `docker compose up -d --remove-orphans`. |
@@ -433,31 +232,19 @@ If the tool's result should appear in the UI table or feed the consent check, al
 | `ModuleNotFoundError` when running tests or Chainlit locally | Activate the venv and run from `backend/`: `cd backend && source .venv/bin/activate`. |
 | Weak or wrong tool use with Ollama | Try `OLLAMA_REASONING=true` or a larger `OLLAMA_MODEL`. 8B models are less reliable than hosted ones. |
 
-## Key design decisions
+## Documentation and diagrams
 
-| Decision | Why | Alternative considered |
-|---|---|---|
-| **Deterministic tools, LLM for orchestration and prose** | Every score, eligibility decision and consent check is reproducible, unit-tested and explainable to compliance. The LLM only picks tools and writes text, so it can't invent a number. | Let the LLM reason over raw data: more flexible, but unauditable, and prone to invented figures. |
-| **Heuristic score, not ML** | No labelled conversion outcomes exist in the data, and a points table is explainable line by line. | A trained propensity model: better ranking once outcome data exists, at the cost of explainability. The score is one function in `rules.py`, so it can be swapped. |
-| **"This month" from transaction signals** | Life-event spends and income or spending trends are why *now* is a good time to call, not just whether the customer qualifies. | Seasonality or campaign calendars: not in the data. |
-| **Tools behind an MCP server** | Tools are discovered at runtime, so adding one needs no agent change. Typed schemas reject bad input before business logic runs, and the tool layer is a separate process from the agent. | In-process LangChain tools: simpler, but couples tools to the agent and gives no schema boundary. |
-| **LangGraph state machine** | An explicit `agent → tools → agent` loop with a round limit, per-session memory (a checkpointer) and per-turn state (consent set, drafts) that resets every turn. | A plain prompt loop or a prebuilt ReAct agent: less control over state and limits. |
-| **Bands, never exact figures** | RMs and the LLM see income, balance and credit score only as bands, and search minimums snap to band edges. That limits data exposure without hiding why a rule fired. | Raw figures: more precise, but needless exposure of sensitive data. |
-| **Consent gate and content rules in code** | A draft is only accepted for a customer whose WhatsApp permission a tool confirmed this turn, and it must pass `check_draft`. Rejections go back to the model with reasons, so it rewrites. | Trusting the prompt: models drift, and compliance can't rely on that. |
-| **Personalise without revealing monitoring** | Drafts use name, city, occupation, tenure, product and a neutral theme ("if you have education plans coming up"). A message that says "we noticed your tuition payment" feels like surveillance, so the content rules reject it. Health is never used. | Quoting the transaction: more specific, but intrusive and a compliance risk. |
-| **Security for a banking context** | RM login (PBKDF2 hashes), per-RM rate limit, message cap and an audit log of every turn. An assistant over customer data must know who asked what. | No auth: fine for a demo, but not credible for a bank. |
-| **Pluggable LLM provider** | OpenAI and Anthropic for quality. Ollama runs locally for free, and keeps customer data on the machine. One `make_chat_model()` switch. | A single provider: less code, but locks in cost and data residency. |
-| **Human in the loop** | Drafts are recorded for RM review and never sent. There is no sending integration. | Auto-send: not acceptable for regulated outreach. |
+| Topic | Guide |
+|---|---|
+| Architecture, execution flow and state | [Architecture](docs/architecture.md) |
+| Prompts and UI behavior | [Using the app](docs/usage.md) |
+| Scoring, data and eligibility | [Business rules](docs/business-rules.md) |
+| Consent, draft validation and audit logs | [Guardrails](docs/guardrails.md) |
+| Tool design and usage | [MCP tools](docs/tools.md) |
+| Project layout, tests and extension | [Development](docs/development.md) |
+| Key design decisions, trade-offs and limitations | [Design decisions](docs/design-decisions.md) |
+| Component architecture | [Architecture diagram](diagrams/architecture_diagram.md) |
+| Agent execution and draft gates | [Process flow](diagrams/process_flow.md) |
+| Database entities and relationships | [Database diagram](diagrams/database_diagram.md) |
 
-## Trade-offs and limitations
-
-- **Scores are heuristics, not probabilities.** The weights and thresholds are illustrative policy, not fitted to outcomes. Treat 80/100 as a ranking, not an 80% chance.
-- **Transaction signals are coarse.** They use category totals and fixed thresholds (±5% income, ±15% spend, one-offs in the last 2 months). Categories come from the seed. Real data needs merchant categorisation, and the thresholds need tuning against conversion outcomes.
-- **Rule-based content checks** catch known wording patterns, not every non-compliant phrasing. An RM still reviews every draft. There's no check that numbers in the final answer match tool outputs, and no prompt-injection classifier.
-- **Authentication covers the chat only.** The MCP HTTP endpoint has no authentication. The MCP and database ports are bound to `127.0.0.1` on the host, so only the chat (`:8000`) is reachable from other machines, but other containers on the Docker network can reach the MCP server. Put HTTPS (a reverse proxy) in front of the chat before exposing it, because the login form is plain HTTP.
-- **State is in-process.** Chat memory (LangGraph's in-memory checkpointer) and the rate limit reset on restart and aren't shared across Chainlit workers. Switch to LangGraph's Postgres checkpointer for durability. Login sessions are signed tokens, so they survive a restart while `CHAINLIT_AUTH_SECRET` stays the same.
-- **Chainlit's own history sidebar** is not enabled (it needs a data layer). It is separate from the CRM database.
-- **Ranking scalability:** `rank_prospects` scans all matching rows in Python (capped at 10,000), then fetches transactions for the candidates in one query. Move scoring into SQL before using large datasets.
-- **Two copies of the base scoring rules.** The seed's `personal_loan_prospects` view keeps the dataset's original ranking for SQL exploration. The app's score lives in `rules.py`, with rescaled weights and timing. Only `rules.py` drives the app.
-- **Dev defaults:** the Postgres password and demo login are for local use only.
-- **Not covered by automated tests:** live LLM providers, live PostgreSQL and the Chainlit UI (see [Testing](#testing)).
+Browse all guides in the [documentation index](docs/README.md).

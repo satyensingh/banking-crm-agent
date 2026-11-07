@@ -1,5 +1,7 @@
 # Database Diagram
 
+[Setup and run](../README.md) · [Documentation index](../docs/README.md) · [Architecture diagram](architecture_diagram.md) · [Process flow](process_flow.md)
+
 Schema: `banking_crm_demo`
 
 ```mermaid
